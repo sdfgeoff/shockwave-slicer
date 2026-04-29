@@ -63,6 +63,13 @@
       <section class="panel-section">
         <div class="field-grid">
           <label>
+            <span>View</span>
+            <select id="viewModeInput">
+              <option value="2d">2D Atlas</option>
+              <option value="3d">3D Volume</option>
+            </select>
+          </label>
+          <label>
             <span>Display</span>
             <select id="displayModeInput">
               <option value="rgba">RGBA</option>
@@ -80,6 +87,9 @@
             </select>
           </label>
         </div>
+        <p class="help-text">
+          3D mode uses the selected channel plus the low and high thresholds as the volume mask.
+        </p>
 
         <label>
           <span>Low Threshold</span>
@@ -103,7 +113,7 @@
           <button id="fitButton" type="button">Fit to View</button>
           <button id="resetButton" type="button">Reset View</button>
         </div>
-        <p class="help-text">Drag to pan. Use the mouse wheel or trackpad to zoom.</p>
+        <p class="help-text">2D: drag to pan and wheel to zoom. 3D: drag to orbit and wheel to dolly.</p>
       </section>
     </aside>
 
