@@ -70,6 +70,13 @@
             </select>
           </label>
           <label>
+            <span>Data</span>
+            <select id="dataModeInput">
+              <option value="field-occupancy">Field + Occupancy</option>
+              <option value="channels">Generic Channels</option>
+            </select>
+          </label>
+          <label>
             <span>Display</span>
             <select id="displayModeInput">
               <option value="rgba">RGBA</option>
@@ -88,7 +95,7 @@
           </label>
         </div>
         <p class="help-text">
-          3D mode uses the selected channel plus the low and high thresholds as the volume mask.
+          Field mode uses red for field values and green for occupancy.
         </p>
 
         <label>

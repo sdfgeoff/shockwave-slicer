@@ -45,7 +45,8 @@ export function processImage() {
   const channelIndex = getChannelIndex(state.channel);
 
   for (let i = 0; i < source.length; i += 4) {
-    const channelValue = source[i + channelIndex];
+    const channelValue = state.dataMode === "field-occupancy" ? source[i] : source[i + channelIndex];
+    const occupancyValue = state.dataMode === "field-occupancy" ? source[i + 1] : 255;
 
     if (state.displayMode === "rgba") {
       target[i] = source[i];
@@ -64,9 +65,10 @@ export function processImage() {
     }
 
     const withinRange = channelValue >= state.lowThreshold && channelValue <= state.highThreshold;
-    target[i] = withinRange ? 255 : 18;
-    target[i + 1] = withinRange ? 220 : 18;
-    target[i + 2] = withinRange ? 170 : 18;
+    const visible = withinRange && occupancyValue > 127;
+    target[i] = visible ? 255 : 18;
+    target[i + 1] = visible ? 220 : 18;
+    target[i + 2] = visible ? 170 : 18;
     target[i + 3] = 255;
   }
 
@@ -80,7 +82,9 @@ export function sampleHoveredPixel(pixelX, pixelY) {
 
   const pixelOffset = (pixelY * state.image.width + pixelX) * 4;
   const channelIndex = getChannelIndex(state.channel);
-  return state.imageData.data[pixelOffset + channelIndex];
+  return state.dataMode === "field-occupancy"
+    ? state.imageData.data[pixelOffset]
+    : state.imageData.data[pixelOffset + channelIndex];
 }
 
 export function getHoveredCellFromCoords(x, y) {

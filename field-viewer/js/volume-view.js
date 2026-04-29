@@ -26,6 +26,7 @@ uniform float uPitch;
 uniform float uCameraDistance;
 uniform vec2 uThreshold;
 uniform int uChannel;
+uniform int uDataMode;
 uniform float uStepCount;
 
 vec3 rotateX(vec3 v, float angle) {
@@ -80,6 +81,20 @@ vec4 sampleAtlas(vec3 volumeCoord) {
   return texture(uAtlas, pixel / uAtlasSize);
 }
 
+vec4 fetchVoxel(ivec3 voxelCoord) {
+  int x = clamp(voxelCoord.x, 0, int(uVolumeSize.x) - 1);
+  int y = clamp(voxelCoord.y, 0, int(uVolumeSize.y) - 1);
+  int z = clamp(voxelCoord.z, 0, int(uVolumeSize.z) - 1);
+  int sliceCol = z % int(uGrid.x);
+  int sliceRow = z / int(uGrid.x);
+  ivec2 pixel = ivec2(
+    sliceCol * int(uVolumeSize.x) + x,
+    sliceRow * int(uVolumeSize.y) + y
+  );
+
+  return texelFetch(uAtlas, pixel, 0);
+}
+
 vec3 channelColor(int channel) {
   if (channel == 0) return vec3(1.0, 0.48, 0.48);
   if (channel == 1) return vec3(0.44, 1.0, 0.66);
@@ -91,6 +106,45 @@ float readChannelAt(vec3 volumeCoord) {
   return readChannel(sampleAtlas(clamp(volumeCoord, vec3(0.0), vec3(0.999999))));
 }
 
+float readGeneratorFieldAt(vec3 volumeCoord) {
+  vec3 clampedCoord = clamp(volumeCoord, vec3(0.0), vec3(0.999999));
+  vec3 voxelPosition = clampedCoord * (uVolumeSize - vec3(1.0));
+  ivec3 base = ivec3(floor(voxelPosition));
+  vec3 fraction = fract(voxelPosition);
+  float weightedValue = 0.0;
+  float totalWeight = 0.0;
+
+  for (int z = 0; z <= 1; z += 1) {
+    for (int y = 0; y <= 1; y += 1) {
+      for (int x = 0; x <= 1; x += 1) {
+        ivec3 offset = ivec3(x, y, z);
+        vec3 selector = vec3(float(x), float(y), float(z));
+        vec3 axisWeight = mix(vec3(1.0) - fraction, fraction, selector);
+        float weight = axisWeight.x * axisWeight.y * axisWeight.z;
+        vec4 voxel = fetchVoxel(base + offset);
+        float occupancy = step(0.5, voxel.g);
+
+        weightedValue += voxel.r * 255.0 * weight * occupancy;
+        totalWeight += weight * occupancy;
+      }
+    }
+  }
+
+  if (totalWeight <= 0.0001) {
+    return -1.0;
+  }
+
+  return weightedValue / totalWeight;
+}
+
+float readFieldAt(vec3 volumeCoord) {
+  if (uDataMode == 1) {
+    return readGeneratorFieldAt(volumeCoord);
+  }
+
+  return readChannelAt(volumeCoord);
+}
+
 vec3 estimateNormal(vec3 volumeCoord) {
   vec3 texel = vec3(
     1.0 / max(uVolumeSize.x, 1.0),
@@ -98,12 +152,13 @@ vec3 estimateNormal(vec3 volumeCoord) {
     1.0 / max(uVolumeSize.z, 1.0)
   );
 
-  float sampleXp = readChannelAt(volumeCoord + vec3(texel.x, 0.0, 0.0));
-  float sampleXm = readChannelAt(volumeCoord - vec3(texel.x, 0.0, 0.0));
-  float sampleYp = readChannelAt(volumeCoord + vec3(0.0, texel.y, 0.0));
-  float sampleYm = readChannelAt(volumeCoord - vec3(0.0, texel.y, 0.0));
-  float sampleZp = readChannelAt(volumeCoord + vec3(0.0, 0.0, texel.z));
-  float sampleZm = readChannelAt(volumeCoord - vec3(0.0, 0.0, texel.z));
+  float center = max(readFieldAt(volumeCoord), 0.0);
+  float sampleXp = max(readFieldAt(volumeCoord + vec3(texel.x, 0.0, 0.0)), center);
+  float sampleXm = max(readFieldAt(volumeCoord - vec3(texel.x, 0.0, 0.0)), center);
+  float sampleYp = max(readFieldAt(volumeCoord + vec3(0.0, texel.y, 0.0)), center);
+  float sampleYm = max(readFieldAt(volumeCoord - vec3(0.0, texel.y, 0.0)), center);
+  float sampleZp = max(readFieldAt(volumeCoord + vec3(0.0, 0.0, texel.z)), center);
+  float sampleZm = max(readFieldAt(volumeCoord - vec3(0.0, 0.0, texel.z)), center);
 
   vec3 gradient = vec3(sampleXp - sampleXm, sampleYp - sampleYm, sampleZp - sampleZm);
   float gradientLength = length(gradient);
@@ -135,7 +190,7 @@ void main() {
   float startT = max(tNear, 0.0);
   float totalDistance = tFar - startT;
   float dt = totalDistance / uStepCount;
-  vec3 baseColor = channelColor(uChannel);
+  vec3 baseColor = uDataMode == 1 ? vec3(0.48, 0.82, 1.0) : channelColor(uChannel);
   float thresholdMid = (uThreshold.x + uThreshold.y) * 0.5;
   float thresholdHalfSpan = max((uThreshold.y - uThreshold.x) * 0.5, 0.5);
   float previousSignedDistance = 0.0;
@@ -151,7 +206,12 @@ void main() {
     float t = startT + dt * i;
     vec3 position = origin + direction * t;
     vec3 volumeCoord = position * 0.5 + 0.5;
-    float value = readChannelAt(volumeCoord);
+    float value = readFieldAt(volumeCoord);
+    if (value < 0.0) {
+      previousSignedDistance = 1.0;
+      hasPreviousSample = true;
+      continue;
+    }
     float signedDistance = abs(value - thresholdMid) - thresholdHalfSpan;
 
     if (signedDistance <= 0.0) {
@@ -163,7 +223,12 @@ void main() {
         float midpoint = (refinedNear + refinedFar) * 0.5;
         vec3 midpointPosition = origin + direction * midpoint;
         vec3 midpointCoord = midpointPosition * 0.5 + 0.5;
-        float midpointValue = readChannelAt(midpointCoord);
+        float midpointValue = readFieldAt(midpointCoord);
+        if (midpointValue < 0.0) {
+          refinedNear = midpoint;
+          nearSignedDistance = 1.0;
+          continue;
+        }
         float midpointSignedDistance = abs(midpointValue - thresholdMid) - thresholdHalfSpan;
         if (midpointSignedDistance <= 0.0) {
           refinedFar = midpoint;
@@ -265,6 +330,7 @@ export class VolumeView {
       cameraDistance: gl.getUniformLocation(this.program, "uCameraDistance"),
       threshold: gl.getUniformLocation(this.program, "uThreshold"),
       channel: gl.getUniformLocation(this.program, "uChannel"),
+      dataMode: gl.getUniformLocation(this.program, "uDataMode"),
       stepCount: gl.getUniformLocation(this.program, "uStepCount"),
     };
   }
@@ -368,6 +434,7 @@ export class VolumeView {
     gl.uniform1f(this.uniforms.cameraDistance, state.cameraDistance);
     gl.uniform2f(this.uniforms.threshold, state.lowThreshold, state.highThreshold);
     gl.uniform1i(this.uniforms.channel, getChannelIndex(state.channel));
+    gl.uniform1i(this.uniforms.dataMode, state.dataMode === "field-occupancy" ? 1 : 0);
     gl.uniform1f(this.uniforms.stepCount, stepCount);
     gl.drawArrays(gl.TRIANGLES, 0, 6);
   }

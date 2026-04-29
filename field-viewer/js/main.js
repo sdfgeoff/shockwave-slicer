@@ -20,6 +20,7 @@ const columnsInput = document.getElementById("columnsInput");
 const rowsInput = document.getElementById("rowsInput");
 const showGridInput = document.getElementById("showGridInput");
 const viewModeInput = document.getElementById("viewModeInput");
+const dataModeInput = document.getElementById("dataModeInput");
 const displayModeInput = document.getElementById("displayModeInput");
 const channelInput = document.getElementById("channelInput");
 const lowThresholdInput = document.getElementById("lowThresholdInput");
@@ -71,7 +72,9 @@ function updateStats() {
   if (state.viewMode === "3d") {
     const volume = getVolumeDimensions();
     hoveredCellLabel.textContent = `${volume.width} x ${volume.height} x ${volume.depth}`;
-    hoveredValueLabel.textContent = `${state.channel.toUpperCase()} ${state.lowThreshold}-${state.highThreshold}`;
+    hoveredValueLabel.textContent = state.dataMode === "field-occupancy"
+      ? `R field ${state.lowThreshold}-${state.highThreshold}, G occupancy`
+      : `${state.channel.toUpperCase()} ${state.lowThreshold}-${state.highThreshold}`;
     return;
   }
 
@@ -166,6 +169,13 @@ viewModeInput.addEventListener("change", () => {
   state.viewMode = viewModeInput.value;
   state.hoveredCell = null;
   state.hoveredValue = null;
+  updateStats();
+  requestRender();
+});
+
+dataModeInput.addEventListener("change", () => {
+  state.dataMode = dataModeInput.value;
+  processImage();
   updateStats();
   requestRender();
 });

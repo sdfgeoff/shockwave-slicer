@@ -15,6 +15,7 @@ export const state = {
   columns: 4,
   rows: 4,
   showGrid: true,
+  dataMode: "field-occupancy",
   displayMode: "rgba",
   channel: "r",
   lowThreshold: 0,
