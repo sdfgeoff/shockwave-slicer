@@ -14,6 +14,10 @@ export const state = {
   dragStartY: 0,
   columns: 4,
   rows: 4,
+  depth: 16,
+  columnsFromUrl: false,
+  rowsFromUrl: false,
+  depthFromUrl: false,
   showGrid: true,
   dataMode: "field-occupancy",
   displayMode: "rgba",
@@ -56,7 +60,7 @@ export function getVolumeDimensions() {
   return {
     width: cell.width,
     height: cell.height,
-    depth: state.columns * state.rows,
+    depth: Math.min(state.depth, state.columns * state.rows),
   };
 }
 

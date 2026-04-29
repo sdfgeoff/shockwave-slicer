@@ -1,5 +1,5 @@
 import { AtlasView } from "./atlas-view.js";
-import { handleFile, processImage } from "./image-model.js";
+import { handleFile, loadImageFromUrl, processImage } from "./image-model.js";
 import {
   clamp,
   clampThresholds,
@@ -18,6 +18,7 @@ const dropHint = document.getElementById("dropHint");
 const imageInput = document.getElementById("imageInput");
 const columnsInput = document.getElementById("columnsInput");
 const rowsInput = document.getElementById("rowsInput");
+const depthInput = document.getElementById("depthInput");
 const showGridInput = document.getElementById("showGridInput");
 const viewModeInput = document.getElementById("viewModeInput");
 const dataModeInput = document.getElementById("dataModeInput");
@@ -108,6 +109,7 @@ function refreshImageDerivedState() {
 function syncGridInputs() {
   columnsInput.value = `${state.columns}`;
   rowsInput.value = `${state.rows}`;
+  depthInput.value = `${state.depth}`;
 }
 
 function render() {
@@ -134,8 +136,15 @@ function resetView() {
 
 function onImageLoaded() {
   const suggestedGrid = suggestGridDimensions(state.image.width, state.image.height);
-  state.columns = suggestedGrid.columns;
-  state.rows = suggestedGrid.rows;
+  if (!state.columnsFromUrl) {
+    state.columns = suggestedGrid.columns;
+  }
+  if (!state.rowsFromUrl) {
+    state.rows = suggestedGrid.rows;
+  }
+  if (!state.depthFromUrl) {
+    state.depth = state.columns * state.rows;
+  }
   syncGridInputs();
   volumeView.updateTexture();
   atlasView.fitToViewport();
@@ -150,12 +159,27 @@ imageInput.addEventListener("change", (event) => {
 
 columnsInput.addEventListener("input", () => {
   state.columns = Math.max(1, Number.parseInt(columnsInput.value, 10) || 1);
+  if (!state.depthFromUrl) {
+    state.depth = state.columns * state.rows;
+    depthInput.value = `${state.depth}`;
+  }
   updateStats();
   requestRender();
 });
 
 rowsInput.addEventListener("input", () => {
   state.rows = Math.max(1, Number.parseInt(rowsInput.value, 10) || 1);
+  if (!state.depthFromUrl) {
+    state.depth = state.columns * state.rows;
+    depthInput.value = `${state.depth}`;
+  }
+  updateStats();
+  requestRender();
+});
+
+depthInput.addEventListener("input", () => {
+  state.depth = Math.max(1, Number.parseInt(depthInput.value, 10) || 1);
+  state.depthFromUrl = true;
   updateStats();
   requestRender();
 });
@@ -315,6 +339,55 @@ viewport.addEventListener("drop", (event) => {
 
 window.addEventListener("resize", resizeViews);
 
+function applyUrlParameters() {
+  const params = new URLSearchParams(window.location.search);
+  const columns = Number.parseInt(params.get("cols"), 10);
+  const rows = Number.parseInt(params.get("rows"), 10);
+  const depth = Number.parseInt(params.get("depth"), 10);
+  const low = Number.parseInt(params.get("low"), 10);
+  const high = Number.parseInt(params.get("high"), 10);
+
+  if (Number.isFinite(columns) && columns > 0) {
+    state.columns = columns;
+    state.columnsFromUrl = true;
+  }
+  if (Number.isFinite(rows) && rows > 0) {
+    state.rows = rows;
+    state.rowsFromUrl = true;
+  }
+  if (Number.isFinite(depth) && depth > 0) {
+    state.depth = depth;
+    state.depthFromUrl = true;
+  } else if (state.columnsFromUrl || state.rowsFromUrl) {
+    state.depth = state.columns * state.rows;
+  }
+  if (params.get("view") === "3d" || params.get("view") === "2d") {
+    state.viewMode = params.get("view");
+    viewModeInput.value = state.viewMode;
+  }
+  if (params.get("data") === "field-occupancy" || params.get("data") === "channels") {
+    state.dataMode = params.get("data");
+    dataModeInput.value = state.dataMode;
+  }
+  if (Number.isFinite(low)) {
+    state.lowThreshold = clamp(low, 0, 255);
+    lowThresholdInput.value = `${state.lowThreshold}`;
+  }
+  if (Number.isFinite(high)) {
+    state.highThreshold = clamp(high, 0, 255);
+    highThresholdInput.value = `${state.highThreshold}`;
+  }
+
+  syncGridInputs();
+  setThresholdLabels();
+
+  const imageUrl = params.get("image");
+  if (imageUrl) {
+    loadImageFromUrl(imageUrl, onImageLoaded);
+  }
+}
+
 setThresholdLabels();
 resizeViews();
 updateStats();
+applyUrlParameters();
