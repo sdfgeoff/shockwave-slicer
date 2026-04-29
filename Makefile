@@ -1,13 +1,14 @@
 INPUT_DIR ?= inputs
 OUTPUT_DIR ?= voxels
 
-VOXEL_X ?= 1
-VOXEL_Y ?= 1
-VOXEL_Z ?= 1
+VOXEL_X ?= 0.4
+VOXEL_Y ?= 0.4
+VOXEL_Z ?= 0.4
 
-SIZE_X ?= 128
-SIZE_Y ?= 128
-SIZE_Z ?= 128
+SIZE_X ?= 50
+SIZE_Y ?= 50
+SIZE_Z ?= 50
+PADDING_VOXELS ?= 3
 
 VOXEL_GEN := field-gen/target/release/field-gen
 FIELD_GEN_SOURCES := $(shell find field-gen/src -type f 2>/dev/null)
@@ -32,6 +33,7 @@ voxels: $(VOXEL_GEN)
 		"$(VOXEL_GEN)" "$$stl" \
 			--voxel "$(VOXEL_X)" "$(VOXEL_Y)" "$(VOXEL_Z)" \
 			--size "$(SIZE_X)" "$(SIZE_Y)" "$(SIZE_Z)" \
+			--padding-voxels "$(PADDING_VOXELS)" \
 			--output "$(OUTPUT_DIR)/$$name"; \
 	done; \
 	if [ "$$found" -eq 0 ]; then \
