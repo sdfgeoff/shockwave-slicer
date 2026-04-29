@@ -615,3 +615,141 @@ fn metadata_json(
 fn json_escape(value: &str) -> String {
     value.replace('\\', "\\\\").replace('"', "\\\"")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn v(x: f64, y: f64, z: f64) -> Vec3 {
+        Vec3 { x, y, z }
+    }
+
+    fn tri(a: Vec3, b: Vec3, c: Vec3) -> Triangle {
+        Triangle {
+            vertices: [a, b, c],
+        }
+    }
+
+    fn cube_triangles(min: Vec3, max: Vec3) -> Vec<Triangle> {
+        vec![
+            tri(
+                v(min.x, min.y, min.z),
+                v(max.x, max.y, min.z),
+                v(max.x, min.y, min.z),
+            ),
+            tri(
+                v(min.x, min.y, min.z),
+                v(min.x, max.y, min.z),
+                v(max.x, max.y, min.z),
+            ),
+            tri(
+                v(min.x, min.y, max.z),
+                v(max.x, min.y, max.z),
+                v(max.x, max.y, max.z),
+            ),
+            tri(
+                v(min.x, min.y, max.z),
+                v(max.x, max.y, max.z),
+                v(min.x, max.y, max.z),
+            ),
+            tri(
+                v(min.x, min.y, min.z),
+                v(max.x, min.y, min.z),
+                v(max.x, min.y, max.z),
+            ),
+            tri(
+                v(min.x, min.y, min.z),
+                v(max.x, min.y, max.z),
+                v(min.x, min.y, max.z),
+            ),
+            tri(
+                v(min.x, max.y, min.z),
+                v(max.x, max.y, max.z),
+                v(max.x, max.y, min.z),
+            ),
+            tri(
+                v(min.x, max.y, min.z),
+                v(min.x, max.y, max.z),
+                v(max.x, max.y, max.z),
+            ),
+            tri(
+                v(min.x, min.y, min.z),
+                v(min.x, min.y, max.z),
+                v(min.x, max.y, max.z),
+            ),
+            tri(
+                v(min.x, min.y, min.z),
+                v(min.x, max.y, max.z),
+                v(min.x, max.y, min.z),
+            ),
+            tri(
+                v(max.x, min.y, min.z),
+                v(max.x, max.y, min.z),
+                v(max.x, max.y, max.z),
+            ),
+            tri(
+                v(max.x, min.y, min.z),
+                v(max.x, max.y, max.z),
+                v(max.x, min.y, max.z),
+            ),
+        ]
+    }
+
+    fn grid(origin: Vec3, dims: [usize; 3], voxel_size: Vec3) -> Grid {
+        Grid {
+            origin,
+            dims,
+            voxel_size,
+            actual_size: Vec3 {
+                x: dims[0] as f64 * voxel_size.x,
+                y: dims[1] as f64 * voxel_size.y,
+                z: dims[2] as f64 * voxel_size.z,
+            },
+        }
+    }
+
+    #[test]
+    fn cube_occupies_all_voxel_centers_inside_it() {
+        let triangles = cube_triangles(v(0.0, 0.0, 0.0), v(10.0, 10.0, 10.0));
+        let occupancy = generate_occupancy(
+            &triangles,
+            grid(v(0.0, 0.0, 0.0), [2, 2, 2], v(5.0, 5.0, 5.0)),
+        );
+
+        assert_eq!(occupancy, vec![255; 8]);
+    }
+
+    #[test]
+    fn cube_leaves_voxel_centers_outside_it_empty() {
+        let triangles = cube_triangles(v(0.0, 0.0, 0.0), v(10.0, 10.0, 10.0));
+        let occupancy = generate_occupancy(
+            &triangles,
+            grid(v(-5.0, -5.0, -5.0), [4, 4, 4], v(5.0, 5.0, 5.0)),
+        );
+        let occupied_count = occupancy.iter().filter(|value| **value == 255).count();
+
+        assert_eq!(occupied_count, 8);
+    }
+
+    #[test]
+    fn grid_size_expands_to_voxel_multiple() {
+        let config = Config {
+            input: PathBuf::from("mesh.stl"),
+            output_prefix: PathBuf::from("out"),
+            voxel_size: v(0.4, 0.4, 0.4),
+            requested_size: Some(v(100.0, 100.0, 100.0)),
+            origin: None,
+        };
+        let bounds = Bounds {
+            min: v(0.0, 0.0, 0.0),
+            max: v(10.0, 10.0, 10.0),
+        };
+
+        let grid = build_grid(&config, bounds).unwrap();
+
+        assert_eq!(grid.dims, [250, 250, 250]);
+        assert_eq!(grid.actual_size.x, 100.0);
+        assert_eq!(grid.actual_size.y, 100.0);
+        assert_eq!(grid.actual_size.z, 100.0);
+    }
+}
