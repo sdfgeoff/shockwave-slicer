@@ -6,7 +6,7 @@ export const state = {
   viewMode: "2d",
   viewportScale: 1,
   minScale: 0.1,
-  maxScale: 64,
+  maxScale: 512,
   offsetX: 0,
   offsetY: 0,
   isDragging: false,

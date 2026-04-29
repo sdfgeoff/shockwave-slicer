@@ -385,6 +385,6 @@ export class VolumeView {
 
   dolly(deltaY) {
     const zoomFactor = deltaY < 0 ? 0.9 : 1.1;
-    state.cameraDistance = clamp(state.cameraDistance * zoomFactor, 1.4, 6.0);
+    state.cameraDistance = clamp(state.cameraDistance * zoomFactor, 0.45, 8.0);
   }
 }
