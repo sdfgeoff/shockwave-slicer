@@ -1,6 +1,13 @@
 import { AtlasView } from "./atlas-view.js";
 import { handleFile, processImage } from "./image-model.js";
-import { clamp, clampThresholds, getCellDimensions, getVolumeDimensions, state } from "./state.js";
+import {
+  clamp,
+  clampThresholds,
+  getCellDimensions,
+  getVolumeDimensions,
+  state,
+  suggestGridDimensions,
+} from "./state.js";
 import { VolumeView } from "./volume-view.js";
 
 const viewport = document.getElementById("viewport");
@@ -95,6 +102,11 @@ function refreshImageDerivedState() {
   requestRender();
 }
 
+function syncGridInputs() {
+  columnsInput.value = `${state.columns}`;
+  rowsInput.value = `${state.rows}`;
+}
+
 function render() {
   syncActiveCanvas();
   if (state.viewMode === "3d") {
@@ -118,6 +130,10 @@ function resetView() {
 }
 
 function onImageLoaded() {
+  const suggestedGrid = suggestGridDimensions(state.image.width, state.image.height);
+  state.columns = suggestedGrid.columns;
+  state.rows = suggestedGrid.rows;
+  syncGridInputs();
   volumeView.updateTexture();
   atlasView.fitToViewport();
   updateStats();

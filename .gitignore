@@ -1,0 +1,4 @@
+target
+voxels
+*.pyc
+**/__pycache__

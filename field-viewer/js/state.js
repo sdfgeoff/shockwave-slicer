@@ -67,3 +67,59 @@ export function clampThresholds() {
     state.lowThreshold = state.highThreshold;
   }
 }
+
+export function suggestGridDimensions(imageWidth, imageHeight) {
+  const widthDivisors = getDivisors(imageWidth);
+  const heightDivisors = getDivisors(imageHeight);
+  let best = {
+    columns: 1,
+    rows: 1,
+    score: Number.POSITIVE_INFINITY,
+  };
+
+  for (const columns of widthDivisors) {
+    const cellWidth = imageWidth / columns;
+
+    for (const rows of heightDivisors) {
+      const cellHeight = imageHeight / rows;
+      const depth = columns * rows;
+      const axisAverage = (cellWidth + cellHeight + depth) / 3;
+      const cellAspectPenalty = Math.abs(cellWidth - cellHeight) / Math.max(axisAverage, 1);
+      const cubicPenalty = (
+        Math.abs(cellWidth - axisAverage) +
+        Math.abs(cellHeight - axisAverage) +
+        Math.abs(depth - axisAverage)
+      ) / Math.max(axisAverage, 1);
+      const atlasShapePenalty = Math.abs(columns - rows) / Math.max(Math.sqrt(depth), 1);
+      const score = cubicPenalty * 1.8 + cellAspectPenalty * 1.4 + atlasShapePenalty * 0.35;
+
+      if (score < best.score) {
+        best = { columns, rows, score };
+      }
+    }
+  }
+
+  return {
+    columns: best.columns,
+    rows: best.rows,
+  };
+}
+
+function getDivisors(value) {
+  const divisors = [];
+  const pairedDivisors = [];
+
+  for (let candidate = 1; candidate * candidate <= value; candidate += 1) {
+    if (value % candidate !== 0) {
+      continue;
+    }
+
+    divisors.push(candidate);
+    const pair = value / candidate;
+    if (pair !== candidate) {
+      pairedDivisors.push(pair);
+    }
+  }
+
+  return divisors.concat(pairedDivisors.reverse());
+}

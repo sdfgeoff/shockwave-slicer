@@ -87,6 +87,33 @@ vec3 channelColor(int channel) {
   return vec3(1.0, 0.87, 0.52);
 }
 
+float readChannelAt(vec3 volumeCoord) {
+  return readChannel(sampleAtlas(clamp(volumeCoord, vec3(0.0), vec3(0.999999))));
+}
+
+vec3 estimateNormal(vec3 volumeCoord) {
+  vec3 texel = vec3(
+    1.0 / max(uVolumeSize.x, 1.0),
+    1.0 / max(uVolumeSize.y, 1.0),
+    1.0 / max(uVolumeSize.z, 1.0)
+  );
+
+  float sampleXp = readChannelAt(volumeCoord + vec3(texel.x, 0.0, 0.0));
+  float sampleXm = readChannelAt(volumeCoord - vec3(texel.x, 0.0, 0.0));
+  float sampleYp = readChannelAt(volumeCoord + vec3(0.0, texel.y, 0.0));
+  float sampleYm = readChannelAt(volumeCoord - vec3(0.0, texel.y, 0.0));
+  float sampleZp = readChannelAt(volumeCoord + vec3(0.0, 0.0, texel.z));
+  float sampleZm = readChannelAt(volumeCoord - vec3(0.0, 0.0, texel.z));
+
+  vec3 gradient = vec3(sampleXp - sampleXm, sampleYp - sampleYm, sampleZp - sampleZm);
+  float gradientLength = length(gradient);
+  if (gradientLength < 0.0001) {
+    return vec3(0.0, 0.0, 1.0);
+  }
+
+  return normalize(-gradient);
+}
+
 void main() {
   vec3 backgroundTop = vec3(0.08, 0.13, 0.16);
   vec3 backgroundBottom = vec3(0.03, 0.04, 0.06);
@@ -109,8 +136,12 @@ void main() {
   float totalDistance = tFar - startT;
   float dt = totalDistance / uStepCount;
   vec3 baseColor = channelColor(uChannel);
-  vec3 color = background * 0.22;
-  float alpha = 0.0;
+  float thresholdMid = (uThreshold.x + uThreshold.y) * 0.5;
+  float thresholdHalfSpan = max((uThreshold.y - uThreshold.x) * 0.5, 0.5);
+  float previousSignedDistance = 0.0;
+  bool hasPreviousSample = false;
+  bool hitSurface = false;
+  vec3 shadedColor = background;
 
   for (float i = 0.0; i < 512.0; i += 1.0) {
     if (i >= uStepCount) {
@@ -120,22 +151,55 @@ void main() {
     float t = startT + dt * i;
     vec3 position = origin + direction * t;
     vec3 volumeCoord = position * 0.5 + 0.5;
-    vec4 voxel = sampleAtlas(volumeCoord);
-    float value = readChannel(voxel);
+    float value = readChannelAt(volumeCoord);
+    float signedDistance = abs(value - thresholdMid) - thresholdHalfSpan;
 
-    if (value >= uThreshold.x && value <= uThreshold.y) {
-      float density = mix(0.08, 0.24, value / 255.0);
-      float remaining = 1.0 - alpha;
-      vec3 lit = baseColor * (0.45 + value / 255.0 * 0.55);
-      color += remaining * density * lit;
-      alpha += remaining * density;
-      if (alpha >= 0.985) {
-        break;
+    if (signedDistance <= 0.0) {
+      float refinedNear = max(startT, t - dt);
+      float refinedFar = t;
+      float nearSignedDistance = hasPreviousSample ? previousSignedDistance : signedDistance;
+
+      for (int refineStep = 0; refineStep < 5; refineStep += 1) {
+        float midpoint = (refinedNear + refinedFar) * 0.5;
+        vec3 midpointPosition = origin + direction * midpoint;
+        vec3 midpointCoord = midpointPosition * 0.5 + 0.5;
+        float midpointValue = readChannelAt(midpointCoord);
+        float midpointSignedDistance = abs(midpointValue - thresholdMid) - thresholdHalfSpan;
+        if (midpointSignedDistance <= 0.0) {
+          refinedFar = midpoint;
+        } else {
+          refinedNear = midpoint;
+          nearSignedDistance = midpointSignedDistance;
+        }
       }
+
+      vec3 hitPosition = origin + direction * refinedFar;
+      vec3 hitCoord = hitPosition * 0.5 + 0.5;
+      vec3 normal = estimateNormal(hitCoord);
+      vec3 lightDirection = normalize(vec3(-0.45, 0.7, 0.55));
+      vec3 viewDirection = normalize(origin - hitPosition);
+      vec3 halfVector = normalize(lightDirection + viewDirection);
+      float diffuse = max(dot(normal, lightDirection), 0.0);
+      float specular = pow(max(dot(normal, halfVector), 0.0), 28.0);
+      float fresnel = pow(1.0 - max(dot(normal, viewDirection), 0.0), 3.0);
+      float ambient = 0.22;
+      float rim = fresnel * 0.28;
+      vec3 surfaceColor = baseColor * (ambient + diffuse * 0.95) + vec3(specular * 0.42 + rim);
+      shadedColor = mix(background * 0.55, surfaceColor, 0.95);
+      hitSurface = true;
+      break;
     }
+
+    previousSignedDistance = signedDistance;
+    hasPreviousSample = true;
   }
 
-  outColor = vec4(color + background * (1.0 - alpha), 1.0);
+  if (hitSurface) {
+    outColor = vec4(shadedColor, 1.0);
+    return;
+  }
+
+  outColor = vec4(background, 1.0);
 }
 `;
 

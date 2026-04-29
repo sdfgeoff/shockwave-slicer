@@ -56,26 +56,44 @@ def sphere_sdf(x, y, z):
 
 
 def cone_sdf(x, y, z):
-    cone_height = 1.4
     base_radius = 0.75
-    y_local = y + 0.7
-    if y_local < 0.0:
-        radial = math.sqrt(x * x + z * z) - base_radius
-        return math.sqrt(radial * radial + y_local * y_local)
-    if y_local > cone_height:
-        return math.sqrt(x * x + z * z + (y_local - cone_height) * (y_local - cone_height))
-
+    half_height = 0.7
     radial = math.sqrt(x * x + z * z)
-    allowed_radius = base_radius * (1.0 - y_local / cone_height)
-    side_distance = radial - allowed_radius
-    cap_distance = max(-y_local, y_local - cone_height)
+    y_centered = y
 
-    if side_distance <= 0.0 and cap_distance <= 0.0:
-        return max(side_distance, cap_distance)
+    # Exact SDF for a capped cone with base radius r1 at y=-h and tip radius r2 at y=+h.
+    r1 = base_radius
+    r2 = 0.0
+    qx = radial
+    qy = y_centered
+    k1x = r2
+    k1y = half_height
+    k2x = r2 - r1
+    k2y = 2.0 * half_height
 
-    outside_side = max(side_distance, 0.0)
-    outside_cap = max(cap_distance, 0.0)
-    return math.sqrt(outside_side * outside_side + outside_cap * outside_cap)
+    if qy < 0.0:
+        clamped_radius = r1
+    else:
+        clamped_radius = r2
+    cax = qx - min(qx, clamped_radius)
+    cay = abs(qy) - half_height
+
+    k1_minus_qx = k1x - qx
+    k1_minus_qy = k1y - qy
+    k2_dot = k2x * k2x + k2y * k2y
+    projection = 0.0
+    if k2_dot > 0.0:
+        projection = max(
+            0.0,
+            min(1.0, (k1_minus_qx * k2x + k1_minus_qy * k2y) / k2_dot),
+        )
+    cbx = qx - k1x + k2x * projection
+    cby = qy - k1y + k2y * projection
+
+    ca_distance_squared = cax * cax + cay * cay
+    cb_distance_squared = cbx * cbx + cby * cby
+    sign = -1.0 if cbx < 0.0 and cay < 0.0 else 1.0
+    return sign * math.sqrt(min(ca_distance_squared, cb_distance_squared))
 
 
 def quantize_signed_distance(distance, max_distance=1.25):
