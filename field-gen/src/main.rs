@@ -1,3 +1,4 @@
+use rayon::prelude::*;
 use std::env;
 use std::fs;
 use std::path::PathBuf;
@@ -395,40 +396,52 @@ fn ceil_to_usize(value: f64, label: &str) -> Result<usize, String> {
 }
 
 fn generate_occupancy(triangles: &[Triangle], grid: Grid) -> Vec<u8> {
-    let voxel_count = grid.dims[0] * grid.dims[1] * grid.dims[2];
-    let mut occupancy = vec![0; voxel_count];
+    let slice_len = grid.dims[0] * grid.dims[1];
+    let mut slices: Vec<(usize, Vec<u8>)> = (0..grid.dims[2])
+        .into_par_iter()
+        .map(|z| (z, generate_slice_occupancy(triangles, grid, z)))
+        .collect();
 
-    for z in 0..grid.dims[2] {
-        let z_position = grid.origin.z + (z as f64 + 0.5) * grid.voxel_size.z;
-        let segments = slice_segments(triangles, z_position);
+    slices.sort_by_key(|(z, _)| *z);
 
-        for y in 0..grid.dims[1] {
-            let y_position = grid.origin.y + (y as f64 + 0.5) * grid.voxel_size.y;
-            let mut crossings = row_crossings(&segments, y_position);
-            if crossings.len() < 2 {
-                continue;
-            }
+    let mut occupancy = Vec::with_capacity(slice_len * grid.dims[2]);
+    for (_, slice) in slices {
+        occupancy.extend(slice);
+    }
 
-            crossings.sort_by(|a, b| a.total_cmp(b));
-            dedupe_sorted_f64(&mut crossings, 1.0e-7);
+    occupancy
+}
 
-            for interval in crossings.chunks_exact(2) {
-                let left = interval[0].min(interval[1]);
-                let right = interval[0].max(interval[1]);
-                let start_x = voxel_index_at_or_after(left, grid.origin.x, grid.voxel_size.x);
-                let end_x = voxel_index_before(right, grid.origin.x, grid.voxel_size.x);
-                let start_x = start_x.min(grid.dims[0]);
-                let end_x = end_x.min(grid.dims[0]);
+fn generate_slice_occupancy(triangles: &[Triangle], grid: Grid, z: usize) -> Vec<u8> {
+    let mut slice = vec![0; grid.dims[0] * grid.dims[1]];
+    let z_position = grid.origin.z + (z as f64 + 0.5) * grid.voxel_size.z;
+    let segments = slice_segments(triangles, z_position);
 
-                for x in start_x..end_x {
-                    let index = x + y * grid.dims[0] + z * grid.dims[0] * grid.dims[1];
-                    occupancy[index] = 255;
-                }
+    for y in 0..grid.dims[1] {
+        let y_position = grid.origin.y + (y as f64 + 0.5) * grid.voxel_size.y;
+        let mut crossings = row_crossings(&segments, y_position);
+        if crossings.len() < 2 {
+            continue;
+        }
+
+        crossings.sort_by(|a, b| a.total_cmp(b));
+        dedupe_sorted_f64(&mut crossings, 1.0e-7);
+
+        for interval in crossings.chunks_exact(2) {
+            let left = interval[0].min(interval[1]);
+            let right = interval[0].max(interval[1]);
+            let start_x = voxel_index_at_or_after(left, grid.origin.x, grid.voxel_size.x);
+            let end_x = voxel_index_before(right, grid.origin.x, grid.voxel_size.x);
+            let start_x = start_x.min(grid.dims[0]);
+            let end_x = end_x.min(grid.dims[0]);
+
+            for x in start_x..end_x {
+                slice[x + y * grid.dims[0]] = 255;
             }
         }
     }
 
-    occupancy
+    slice
 }
 
 fn slice_segments(triangles: &[Triangle], z: f64) -> Vec<Segment2> {
