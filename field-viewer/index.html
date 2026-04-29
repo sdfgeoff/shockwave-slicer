@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Voxel Field Viewer</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="control-panel">
+      <div class="panel-header">
+        <p class="eyebrow">Voxel Inspector</p>
+        <h1>Field Viewer</h1>
+        <p class="panel-copy">
+          Load an encoded image, split it into layer cells, and inspect distance-field data by channel.
+        </p>
+      </div>
+
+      <section class="panel-section">
+        <label class="file-picker" for="imageInput">
+          <span>Load Image</span>
+          <input id="imageInput" type="file" accept="image/*">
+        </label>
+        <p class="help-text">You can also drag and drop an image into the viewport.</p>
+      </section>
+
+      <section class="panel-section">
+        <div class="field-grid">
+          <label>
+            <span>Columns</span>
+            <input id="columnsInput" type="number" min="1" step="1" value="4">
+          </label>
+          <label>
+            <span>Rows</span>
+            <input id="rowsInput" type="number" min="1" step="1" value="4">
+          </label>
+        </div>
+        <label class="toggle-row">
+          <input id="showGridInput" type="checkbox" checked>
+          <span>Show cell grid</span>
+        </label>
+        <div class="stats-grid">
+          <div>
+            <span class="stat-label">Image</span>
+            <strong id="imageSizeLabel">No image loaded</strong>
+          </div>
+          <div>
+            <span class="stat-label">Cell Size</span>
+            <strong id="cellSizeLabel">-</strong>
+          </div>
+          <div>
+            <span class="stat-label">Hovered Layer</span>
+            <strong id="hoveredCellLabel">-</strong>
+          </div>
+          <div>
+            <span class="stat-label">Hovered Value</span>
+            <strong id="hoveredValueLabel">-</strong>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel-section">
+        <div class="field-grid">
+          <label>
+            <span>Display</span>
+            <select id="displayModeInput">
+              <option value="rgba">RGBA</option>
+              <option value="single">Single Channel</option>
+              <option value="threshold">Threshold Mask</option>
+            </select>
+          </label>
+          <label>
+            <span>Channel</span>
+            <select id="channelInput">
+              <option value="r">Red</option>
+              <option value="g">Green</option>
+              <option value="b">Blue</option>
+              <option value="a">Alpha</option>
+            </select>
+          </label>
+        </div>
+
+        <label>
+          <span>Low Threshold</span>
+          <div class="range-row">
+            <input id="lowThresholdInput" type="range" min="0" max="255" step="1" value="0">
+            <output id="lowThresholdValue" for="lowThresholdInput">0</output>
+          </div>
+        </label>
+
+        <label>
+          <span>High Threshold</span>
+          <div class="range-row">
+            <input id="highThresholdInput" type="range" min="0" max="255" step="1" value="255">
+            <output id="highThresholdValue" for="highThresholdInput">255</output>
+          </div>
+        </label>
+      </section>
+
+      <section class="panel-section">
+        <div class="button-row">
+          <button id="fitButton" type="button">Fit to View</button>
+          <button id="resetButton" type="button">Reset View</button>
+        </div>
+        <p class="help-text">Drag to pan. Use the mouse wheel or trackpad to zoom.</p>
+      </section>
+    </aside>
+
+    <main class="viewer-panel">
+      <div id="viewport" class="viewport">
+        <canvas id="viewerCanvas"></canvas>
+        <div id="dropHint" class="drop-hint">
+          Drop an encoded voxel image here or use the file picker.
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
