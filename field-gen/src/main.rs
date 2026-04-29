@@ -2,11 +2,6 @@ use std::env;
 use std::fs;
 use std::path::PathBuf;
 
-const RAY_DIR: Vec3 = Vec3 {
-    x: 1.0,
-    y: 0.371_390_676_354_103_7,
-    z: 0.529_812_942_826_017_5,
-};
 const EPSILON: f64 = 1.0e-9;
 
 #[derive(Clone, Copy, Debug)]
@@ -40,23 +35,23 @@ impl Vec3 {
             z: self.z - other.z,
         }
     }
-
-    fn cross(self, other: Self) -> Self {
-        Self {
-            x: self.y * other.z - self.z * other.y,
-            y: self.z * other.x - self.x * other.z,
-            z: self.x * other.y - self.y * other.x,
-        }
-    }
-
-    fn dot(self, other: Self) -> f64 {
-        self.x * other.x + self.y * other.y + self.z * other.z
-    }
 }
 
 #[derive(Clone, Debug)]
 struct Triangle {
     vertices: [Vec3; 3],
+}
+
+#[derive(Clone, Copy, Debug)]
+struct Vec2 {
+    x: f64,
+    y: f64,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct Segment2 {
+    a: Vec2,
+    b: Vec2,
 }
 
 #[derive(Clone, Debug)]
@@ -404,15 +399,28 @@ fn generate_occupancy(triangles: &[Triangle], grid: Grid) -> Vec<u8> {
     let mut occupancy = vec![0; voxel_count];
 
     for z in 0..grid.dims[2] {
-        for y in 0..grid.dims[1] {
-            for x in 0..grid.dims[0] {
-                let point = Vec3 {
-                    x: grid.origin.x + (x as f64 + 0.5) * grid.voxel_size.x,
-                    y: grid.origin.y + (y as f64 + 0.5) * grid.voxel_size.y,
-                    z: grid.origin.z + (z as f64 + 0.5) * grid.voxel_size.z,
-                };
+        let z_position = grid.origin.z + (z as f64 + 0.5) * grid.voxel_size.z;
+        let segments = slice_segments(triangles, z_position);
 
-                if point_inside_mesh(point, triangles) {
+        for y in 0..grid.dims[1] {
+            let y_position = grid.origin.y + (y as f64 + 0.5) * grid.voxel_size.y;
+            let mut crossings = row_crossings(&segments, y_position);
+            if crossings.len() < 2 {
+                continue;
+            }
+
+            crossings.sort_by(|a, b| a.total_cmp(b));
+            dedupe_sorted_f64(&mut crossings, 1.0e-7);
+
+            for interval in crossings.chunks_exact(2) {
+                let left = interval[0].min(interval[1]);
+                let right = interval[0].max(interval[1]);
+                let start_x = voxel_index_at_or_after(left, grid.origin.x, grid.voxel_size.x);
+                let end_x = voxel_index_before(right, grid.origin.x, grid.voxel_size.x);
+                let start_x = start_x.min(grid.dims[0]);
+                let end_x = end_x.min(grid.dims[0]);
+
+                for x in start_x..end_x {
                     let index = x + y * grid.dims[0] + z * grid.dims[0] * grid.dims[1];
                     occupancy[index] = 255;
                 }
@@ -421,6 +429,111 @@ fn generate_occupancy(triangles: &[Triangle], grid: Grid) -> Vec<u8> {
     }
 
     occupancy
+}
+
+fn slice_segments(triangles: &[Triangle], z: f64) -> Vec<Segment2> {
+    triangles
+        .iter()
+        .filter_map(|triangle| triangle_z_intersection(triangle, z))
+        .collect()
+}
+
+fn triangle_z_intersection(triangle: &Triangle, z: f64) -> Option<Segment2> {
+    let vertices = triangle.vertices;
+    let edges = [
+        (vertices[0], vertices[1]),
+        (vertices[1], vertices[2]),
+        (vertices[2], vertices[0]),
+    ];
+    let mut points = Vec::with_capacity(2);
+
+    for (a, b) in edges {
+        let a_offset = a.z - z;
+        let b_offset = b.z - z;
+
+        if a_offset.abs() <= EPSILON && b_offset.abs() <= EPSILON {
+            continue;
+        }
+
+        if (a_offset <= EPSILON && b_offset > EPSILON)
+            || (b_offset <= EPSILON && a_offset > EPSILON)
+        {
+            let t = (z - a.z) / (b.z - a.z);
+            points.push(Vec2 {
+                x: a.x + (b.x - a.x) * t,
+                y: a.y + (b.y - a.y) * t,
+            });
+        }
+    }
+
+    dedupe_vec2(&mut points, 1.0e-8);
+
+    if points.len() == 2 && distance_squared_2d(points[0], points[1]) > 1.0e-16 {
+        Some(Segment2 {
+            a: points[0],
+            b: points[1],
+        })
+    } else {
+        None
+    }
+}
+
+fn row_crossings(segments: &[Segment2], y: f64) -> Vec<f64> {
+    let mut crossings = Vec::new();
+
+    for segment in segments {
+        let y0 = segment.a.y;
+        let y1 = segment.b.y;
+
+        if (y0 <= y && y1 > y) || (y1 <= y && y0 > y) {
+            let t = (y - y0) / (y1 - y0);
+            crossings.push(segment.a.x + (segment.b.x - segment.a.x) * t);
+        }
+    }
+
+    crossings
+}
+
+fn voxel_index_at_or_after(position: f64, origin: f64, voxel_size: f64) -> usize {
+    let value = ((position - origin) / voxel_size - 0.5).ceil();
+    if value <= 0.0 { 0 } else { value as usize }
+}
+
+fn voxel_index_before(position: f64, origin: f64, voxel_size: f64) -> usize {
+    let value = ((position - origin) / voxel_size - 0.5).ceil();
+    if value <= 0.0 { 0 } else { value as usize }
+}
+
+fn dedupe_sorted_f64(values: &mut Vec<f64>, epsilon: f64) {
+    let mut write_index = 0;
+    for read_index in 0..values.len() {
+        if write_index == 0 || (values[read_index] - values[write_index - 1]).abs() > epsilon {
+            values[write_index] = values[read_index];
+            write_index += 1;
+        }
+    }
+    values.truncate(write_index);
+}
+
+fn dedupe_vec2(points: &mut Vec<Vec2>, epsilon: f64) {
+    let mut unique = Vec::with_capacity(points.len());
+
+    for point in points.iter().copied() {
+        if !unique
+            .iter()
+            .any(|existing| distance_squared_2d(point, *existing) <= epsilon * epsilon)
+        {
+            unique.push(point);
+        }
+    }
+
+    *points = unique;
+}
+
+fn distance_squared_2d(a: Vec2, b: Vec2) -> f64 {
+    let dx = a.x - b.x;
+    let dy = a.y - b.y;
+    dx * dx + dy * dy
 }
 
 fn build_atlas(grid: Grid) -> Atlas {
@@ -498,57 +611,6 @@ fn write_occupancy_bmp(
     }
 
     fs::write(path, bytes).map_err(|error| error.to_string())
-}
-
-fn point_inside_mesh(point: Vec3, triangles: &[Triangle]) -> bool {
-    let mut hits = Vec::new();
-
-    for triangle in triangles {
-        if let Some(distance) = ray_triangle_intersection(point, RAY_DIR, triangle) {
-            hits.push(distance);
-        }
-    }
-
-    hits.sort_by(|a, b| a.total_cmp(b));
-
-    let mut unique_hit_count = 0;
-    let mut last_hit: Option<f64> = None;
-    for hit in hits {
-        if last_hit.is_some_and(|previous| (hit - previous).abs() < 1.0e-7) {
-            continue;
-        }
-        unique_hit_count += 1;
-        last_hit = Some(hit);
-    }
-
-    unique_hit_count % 2 == 1
-}
-
-fn ray_triangle_intersection(origin: Vec3, direction: Vec3, triangle: &Triangle) -> Option<f64> {
-    let edge1 = triangle.vertices[1].sub(triangle.vertices[0]);
-    let edge2 = triangle.vertices[2].sub(triangle.vertices[0]);
-    let h = direction.cross(edge2);
-    let determinant = edge1.dot(h);
-
-    if determinant.abs() < EPSILON {
-        return None;
-    }
-
-    let inverse_determinant = 1.0 / determinant;
-    let s = origin.sub(triangle.vertices[0]);
-    let u = inverse_determinant * s.dot(h);
-    if !(-EPSILON..=1.0 + EPSILON).contains(&u) {
-        return None;
-    }
-
-    let q = s.cross(edge1);
-    let v = inverse_determinant * direction.dot(q);
-    if v < -EPSILON || u + v > 1.0 + EPSILON {
-        return None;
-    }
-
-    let t = inverse_determinant * edge2.dot(q);
-    if t > EPSILON { Some(t) } else { None }
 }
 
 fn metadata_json(
