@@ -202,6 +202,8 @@ button:hover {
 }
 
 canvas {
+  position: absolute;
+  inset: 0;
   width: 100%;
   height: 100%;
   display: block;
@@ -210,6 +212,10 @@ canvas {
 
 canvas.is-panning {
   cursor: grabbing;
+}
+
+canvas.hidden {
+  display: none;
 }
 
 .drop-hint {

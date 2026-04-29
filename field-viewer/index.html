@@ -119,7 +119,8 @@
 
     <main class="viewer-panel">
       <div id="viewport" class="viewport">
-        <canvas id="viewerCanvas"></canvas>
+        <canvas id="atlasCanvas"></canvas>
+        <canvas id="volumeCanvas" class="hidden"></canvas>
         <div id="dropHint" class="drop-hint">
           Drop an encoded voxel image here or use the file picker.
         </div>
@@ -127,6 +128,6 @@
     </main>
   </div>
 
-  <script src="app.js"></script>
+  <script type="module" src="js/main.js"></script>
 </body>
 </html>
