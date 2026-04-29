@@ -10,6 +10,8 @@ pub struct Config {
     pub requested_size: Option<Vec3>,
     pub padding_voxels: usize,
     pub origin: Option<Vec3>,
+    pub field_enabled: bool,
+    pub field_rate: Vec3,
 }
 
 pub fn parse_args(args: Vec<String>) -> Result<Config, String> {
@@ -23,6 +25,12 @@ pub fn parse_args(args: Vec<String>) -> Result<Config, String> {
     let mut requested_size = None;
     let mut padding_voxels = 3;
     let mut origin = None;
+    let mut field_enabled = false;
+    let mut field_rate = Vec3 {
+        x: 1.0,
+        y: 1.0,
+        z: 1.0,
+    };
     let mut index = 1;
 
     while index < args.len() {
@@ -44,6 +52,12 @@ pub fn parse_args(args: Vec<String>) -> Result<Config, String> {
             "--origin" => {
                 origin = Some(parse_vec3_flag("--origin", &args, &mut index)?);
             }
+            "--field" => {
+                field_enabled = true;
+            }
+            "--field-rate" => {
+                field_rate = parse_vec3_flag("--field-rate", &args, &mut index)?;
+            }
             "--output" | "-o" => {
                 index += 1;
                 output_prefix = args
@@ -63,6 +77,7 @@ pub fn parse_args(args: Vec<String>) -> Result<Config, String> {
     if let Some(size) = requested_size {
         validate_positive_vec3("--size", size)?;
     }
+    validate_positive_vec3("--field-rate", field_rate)?;
 
     Ok(Config {
         input,
@@ -71,6 +86,8 @@ pub fn parse_args(args: Vec<String>) -> Result<Config, String> {
         requested_size,
         padding_voxels,
         origin,
+        field_enabled,
+        field_rate,
     })
 }
 
@@ -102,10 +119,11 @@ fn validate_positive_vec3(name: &str, value: Vec3) -> Result<(), String> {
 }
 
 fn usage() -> String {
-    "usage: field-gen <input.stl> --voxel <x-mm> <y-mm> <z-mm> [--size <x-mm> <y-mm> <z-mm>] [--padding-voxels <n>] [--origin <x-mm> <y-mm> <z-mm>] [--output <prefix>]\n\
+    "usage: field-gen <input.stl> --voxel <x-mm> <y-mm> <z-mm> [--size <x-mm> <y-mm> <z-mm>] [--padding-voxels <n>] [--origin <x-mm> <y-mm> <z-mm>] [--field] [--field-rate <x> <y> <z>] [--output <prefix>]\n\
 \n\
 STL coordinates are assumed to be millimeters. If --size is provided, it is treated as a maximum grid size.\n\
 By default, the grid fits the STL bounds plus 3 voxels of padding on each side.\n\
+--field propagates an anisotropic field through occupied voxels from the lowest occupied Z slice.\n\
 Voxel size takes priority: grid dimensions are ceil(size / voxel), so actual size may expand slightly."
         .to_string()
 }

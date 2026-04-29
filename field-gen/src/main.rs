@@ -1,4 +1,5 @@
 mod cli;
+mod field;
 mod geometry;
 mod grid;
 mod output;
@@ -9,6 +10,7 @@ use std::env;
 use std::fs;
 
 use cli::parse_args;
+use field::{AnisotropicEuclideanPropagation, propagate_field};
 use geometry::mesh_bounds;
 use grid::build_grid;
 use output::{build_atlas, metadata_json, write_occupancy_bmp};
@@ -35,6 +37,15 @@ fn run() -> Result<(), String> {
     let bounds = mesh_bounds(&triangles);
     let grid = build_grid(&config, bounds)?;
     let occupancy = generate_occupancy(&triangles, grid);
+    let field = if config.field_enabled {
+        Some(propagate_field(
+            &occupancy,
+            grid,
+            &AnisotropicEuclideanPropagation::new(config.field_rate),
+        )?)
+    } else {
+        None
+    };
     let atlas = build_atlas(grid);
     let occupied_count = occupancy.iter().filter(|value| **value != 0).count();
 
@@ -43,7 +54,7 @@ fn run() -> Result<(), String> {
     let metadata_path = config.output_prefix.with_extension("json");
     fs::write(&volume_path, &occupancy)
         .map_err(|error| format!("failed to write {}: {error}", volume_path.display()))?;
-    write_occupancy_bmp(&image_path, &occupancy, grid, atlas)
+    write_occupancy_bmp(&image_path, &occupancy, field.as_ref(), grid, atlas)
         .map_err(|error| format!("failed to write {}: {error}", image_path.display()))?;
     fs::write(
         &metadata_path,
@@ -54,6 +65,7 @@ fn run() -> Result<(), String> {
             atlas,
             &volume_path,
             &image_path,
+            field.as_ref(),
             occupied_count,
             occupancy.len(),
         ),

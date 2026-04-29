@@ -2,6 +2,7 @@ use std::fs;
 use std::path::PathBuf;
 
 use crate::cli::Config;
+use crate::field::Field;
 use crate::geometry::Bounds;
 use crate::grid::Grid;
 
@@ -28,6 +29,7 @@ pub fn build_atlas(grid: Grid) -> Atlas {
 pub fn write_occupancy_bmp(
     path: &PathBuf,
     occupancy: &[u8],
+    field: Option<&Field>,
     grid: Grid,
     atlas: Atlas,
 ) -> Result<(), String> {
@@ -72,22 +74,40 @@ pub fn write_occupancy_bmp(
             let z = slice_row * atlas.columns + slice_column;
             let x = atlas_x % grid.dims[0];
             let y = atlas_y % grid.dims[1];
-            let value = if z < grid.dims[2] {
+            let (red, green, blue) = if z < grid.dims[2] {
                 let voxel_index = x + y * grid.dims[0] + z * grid.dims[0] * grid.dims[1];
-                occupancy[voxel_index]
+                if let Some(field) = field {
+                    (
+                        encode_field_distance(field, voxel_index),
+                        occupancy[voxel_index],
+                        0,
+                    )
+                } else {
+                    let value = occupancy[voxel_index];
+                    (value, value, value)
+                }
             } else {
-                0
+                (0, 0, 0)
             };
 
-            bytes.push(value);
-            bytes.push(value);
-            bytes.push(value);
+            bytes.push(blue);
+            bytes.push(green);
+            bytes.push(red);
         }
 
         bytes.extend(std::iter::repeat_n(0, padding));
     }
 
     fs::write(path, bytes).map_err(|error| error.to_string())
+}
+
+fn encode_field_distance(field: &Field, index: usize) -> u8 {
+    let distance = field.distances[index];
+    if !distance.is_finite() || field.max_distance <= 0.0 {
+        return 0;
+    }
+
+    ((distance / field.max_distance).clamp(0.0, 1.0) * 255.0).round() as u8
 }
 
 pub fn metadata_json(
@@ -97,6 +117,7 @@ pub fn metadata_json(
     atlas: Atlas,
     volume_path: &PathBuf,
     image_path: &PathBuf,
+    field: Option<&Field>,
     occupied_count: usize,
     voxel_count: usize,
 ) -> String {
@@ -108,12 +129,15 @@ pub fn metadata_json(
             "  \"layout\": \"x-fastest-u8\",\n",
             "  \"occupancy_file\": \"{}\",\n",
             "  \"image_file\": \"{}\",\n",
-            "  \"image_format\": \"bmp-grayscale-slice-atlas\",\n",
+            "  \"image_format\": \"bmp-r-field-g-occupancy-slice-atlas\",\n",
             "  \"image_grid\": [{}, {}],\n",
             "  \"image_size_px\": [{}, {}],\n",
             "  \"dimensions\": [{}, {}, {}],\n",
             "  \"voxel_size_mm\": [{:.9}, {:.9}, {:.9}],\n",
             "  \"padding_voxels\": {},\n",
+            "  \"field_enabled\": {},\n",
+            "  \"field_rate\": [{:.9}, {:.9}, {:.9}],\n",
+            "  \"field_max_distance\": {},\n",
             "  \"origin_mm\": [{:.9}, {:.9}, {:.9}],\n",
             "  \"actual_size_mm\": [{:.9}, {:.9}, {:.9}],\n",
             "  \"model_bounds_min_mm\": [{:.9}, {:.9}, {:.9}],\n",
@@ -136,6 +160,11 @@ pub fn metadata_json(
         grid.voxel_size.y,
         grid.voxel_size.z,
         config.padding_voxels,
+        config.field_enabled,
+        config.field_rate.x,
+        config.field_rate.y,
+        config.field_rate.z,
+        field_max_distance_json(field),
         grid.origin.x,
         grid.origin.y,
         grid.origin.z,
@@ -155,4 +184,10 @@ pub fn metadata_json(
 
 fn json_escape(value: &str) -> String {
     value.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+fn field_max_distance_json(field: Option<&Field>) -> String {
+    field
+        .map(|field| format!("{:.9}", field.max_distance))
+        .unwrap_or_else(|| "null".to_string())
 }

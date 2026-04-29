@@ -9,6 +9,20 @@ pub struct Grid {
     pub actual_size: Vec3,
 }
 
+impl Grid {
+    pub fn voxel_count(self) -> usize {
+        self.dims[0] * self.dims[1] * self.dims[2]
+    }
+
+    pub fn slice_len(self) -> usize {
+        self.dims[0] * self.dims[1]
+    }
+
+    pub fn index(self, x: usize, y: usize, z: usize) -> usize {
+        x + y * self.dims[0] + z * self.slice_len()
+    }
+}
+
 pub fn build_grid(config: &Config, bounds: Bounds) -> Result<Grid, String> {
     let model_size = bounds.max.sub(bounds.min);
     let padding_size = Vec3 {
@@ -90,6 +104,8 @@ mod tests {
             requested_size: Some(v(128.0, 128.0, 128.0)),
             padding_voxels: 3,
             origin: None,
+            field_enabled: false,
+            field_rate: v(1.0, 1.0, 1.0),
         };
         let bounds = Bounds {
             min: v(0.0, 0.0, 0.0),
@@ -116,6 +132,8 @@ mod tests {
             requested_size: Some(v(100.0, 100.0, 100.0)),
             padding_voxels: 3,
             origin: None,
+            field_enabled: false,
+            field_rate: v(1.0, 1.0, 1.0),
         };
         let bounds = Bounds {
             min: v(0.0, 0.0, 0.0),
@@ -142,6 +160,8 @@ mod tests {
             requested_size: Some(v(100.0, 100.0, 100.0)),
             padding_voxels: 3,
             origin: Some(v(-20.0, -10.0, 5.0)),
+            field_enabled: false,
+            field_rate: v(1.0, 1.0, 1.0),
         };
         let bounds = Bounds {
             min: v(0.0, 0.0, 0.0),

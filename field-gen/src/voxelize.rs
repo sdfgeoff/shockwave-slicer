@@ -1,6 +1,6 @@
 use rayon::prelude::*;
 
-use crate::geometry::{Segment2, Triangle, Vec2, Vec3};
+use crate::geometry::{Segment2, Triangle, Vec2};
 use crate::grid::Grid;
 
 const EPSILON: f64 = 1.0e-9;
@@ -162,6 +162,7 @@ fn distance_squared_2d(a: Vec2, b: Vec2) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::geometry::Vec3;
 
     fn v(x: f64, y: f64, z: f64) -> Vec3 {
         Vec3 { x, y, z }
