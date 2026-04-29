@@ -1,0 +1,158 @@
+use std::fs;
+use std::path::PathBuf;
+
+use crate::cli::Config;
+use crate::geometry::Bounds;
+use crate::grid::Grid;
+
+#[derive(Clone, Copy, Debug)]
+pub struct Atlas {
+    pub columns: usize,
+    pub rows: usize,
+    pub width: usize,
+    pub height: usize,
+}
+
+pub fn build_atlas(grid: Grid) -> Atlas {
+    let columns = (grid.dims[2] as f64).sqrt().ceil() as usize;
+    let rows = grid.dims[2].div_ceil(columns);
+
+    Atlas {
+        columns,
+        rows,
+        width: grid.dims[0] * columns,
+        height: grid.dims[1] * rows,
+    }
+}
+
+pub fn write_occupancy_bmp(
+    path: &PathBuf,
+    occupancy: &[u8],
+    grid: Grid,
+    atlas: Atlas,
+) -> Result<(), String> {
+    let row_stride = (atlas.width * 3).div_ceil(4) * 4;
+    let pixel_data_size = row_stride
+        .checked_mul(atlas.height)
+        .ok_or_else(|| "BMP pixel data size overflow".to_string())?;
+    let file_size = 14usize
+        .checked_add(40)
+        .and_then(|header_size| header_size.checked_add(pixel_data_size))
+        .ok_or_else(|| "BMP file size overflow".to_string())?;
+
+    if atlas.width > i32::MAX as usize || atlas.height > i32::MAX as usize {
+        return Err("BMP dimensions are too large".to_string());
+    }
+    if file_size > u32::MAX as usize || pixel_data_size > u32::MAX as usize {
+        return Err("BMP file is too large".to_string());
+    }
+
+    let mut bytes = Vec::with_capacity(file_size);
+    bytes.extend_from_slice(b"BM");
+    bytes.extend_from_slice(&(file_size as u32).to_le_bytes());
+    bytes.extend_from_slice(&[0; 4]);
+    bytes.extend_from_slice(&(54u32).to_le_bytes());
+    bytes.extend_from_slice(&(40u32).to_le_bytes());
+    bytes.extend_from_slice(&(atlas.width as i32).to_le_bytes());
+    bytes.extend_from_slice(&(-(atlas.height as i32)).to_le_bytes());
+    bytes.extend_from_slice(&(1u16).to_le_bytes());
+    bytes.extend_from_slice(&(24u16).to_le_bytes());
+    bytes.extend_from_slice(&(0u32).to_le_bytes());
+    bytes.extend_from_slice(&(pixel_data_size as u32).to_le_bytes());
+    bytes.extend_from_slice(&(2_835i32).to_le_bytes());
+    bytes.extend_from_slice(&(2_835i32).to_le_bytes());
+    bytes.extend_from_slice(&(0u32).to_le_bytes());
+    bytes.extend_from_slice(&(0u32).to_le_bytes());
+
+    let padding = row_stride - atlas.width * 3;
+    for atlas_y in 0..atlas.height {
+        for atlas_x in 0..atlas.width {
+            let slice_column = atlas_x / grid.dims[0];
+            let slice_row = atlas_y / grid.dims[1];
+            let z = slice_row * atlas.columns + slice_column;
+            let x = atlas_x % grid.dims[0];
+            let y = atlas_y % grid.dims[1];
+            let value = if z < grid.dims[2] {
+                let voxel_index = x + y * grid.dims[0] + z * grid.dims[0] * grid.dims[1];
+                occupancy[voxel_index]
+            } else {
+                0
+            };
+
+            bytes.push(value);
+            bytes.push(value);
+            bytes.push(value);
+        }
+
+        bytes.extend(std::iter::repeat_n(0, padding));
+    }
+
+    fs::write(path, bytes).map_err(|error| error.to_string())
+}
+
+pub fn metadata_json(
+    config: &Config,
+    bounds: Bounds,
+    grid: Grid,
+    atlas: Atlas,
+    volume_path: &PathBuf,
+    image_path: &PathBuf,
+    occupied_count: usize,
+    voxel_count: usize,
+) -> String {
+    format!(
+        concat!(
+            "{{\n",
+            "  \"input\": \"{}\",\n",
+            "  \"units\": \"mm\",\n",
+            "  \"layout\": \"x-fastest-u8\",\n",
+            "  \"occupancy_file\": \"{}\",\n",
+            "  \"image_file\": \"{}\",\n",
+            "  \"image_format\": \"bmp-grayscale-slice-atlas\",\n",
+            "  \"image_grid\": [{}, {}],\n",
+            "  \"image_size_px\": [{}, {}],\n",
+            "  \"dimensions\": [{}, {}, {}],\n",
+            "  \"voxel_size_mm\": [{:.9}, {:.9}, {:.9}],\n",
+            "  \"padding_voxels\": {},\n",
+            "  \"origin_mm\": [{:.9}, {:.9}, {:.9}],\n",
+            "  \"actual_size_mm\": [{:.9}, {:.9}, {:.9}],\n",
+            "  \"model_bounds_min_mm\": [{:.9}, {:.9}, {:.9}],\n",
+            "  \"model_bounds_max_mm\": [{:.9}, {:.9}, {:.9}],\n",
+            "  \"occupied_voxels\": {},\n",
+            "  \"total_voxels\": {}\n",
+            "}}\n"
+        ),
+        json_escape(&config.input.display().to_string()),
+        json_escape(&volume_path.display().to_string()),
+        json_escape(&image_path.display().to_string()),
+        atlas.columns,
+        atlas.rows,
+        atlas.width,
+        atlas.height,
+        grid.dims[0],
+        grid.dims[1],
+        grid.dims[2],
+        grid.voxel_size.x,
+        grid.voxel_size.y,
+        grid.voxel_size.z,
+        config.padding_voxels,
+        grid.origin.x,
+        grid.origin.y,
+        grid.origin.z,
+        grid.actual_size.x,
+        grid.actual_size.y,
+        grid.actual_size.z,
+        bounds.min.x,
+        bounds.min.y,
+        bounds.min.z,
+        bounds.max.x,
+        bounds.max.y,
+        bounds.max.z,
+        occupied_count,
+        voxel_count,
+    )
+}
+
+fn json_escape(value: &str) -> String {
+    value.replace('\\', "\\\\").replace('"', "\\\"")
+}
