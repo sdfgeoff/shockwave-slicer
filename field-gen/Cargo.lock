@@ -37,7 +37,11 @@ checksum = "48c757948c5ede0e46177b7add2e67155f70e33c07fea8284df6576da70b3719"
 name = "field-gen"
 version = "0.1.0"
 dependencies = [
- "rayon",
+ "shockwave-core",
+ "shockwave-iso",
+ "shockwave-output",
+ "shockwave-stl",
+ "shockwave-voxel",
 ]
 
 [[package]]
@@ -58,4 +62,40 @@ checksum = "22e18b0f0062d30d4230b2e85ff77fdfe4326feb054b9783a3460d8435c8ab91"
 dependencies = [
  "crossbeam-deque",
  "crossbeam-utils",
+]
+
+[[package]]
+name = "shockwave-core"
+version = "0.1.0"
+
+[[package]]
+name = "shockwave-iso"
+version = "0.1.0"
+dependencies = [
+ "shockwave-core",
+ "shockwave-voxel",
+]
+
+[[package]]
+name = "shockwave-output"
+version = "0.1.0"
+dependencies = [
+ "shockwave-core",
+ "shockwave-iso",
+ "shockwave-voxel",
+]
+
+[[package]]
+name = "shockwave-stl"
+version = "0.1.0"
+dependencies = [
+ "shockwave-core",
+]
+
+[[package]]
+name = "shockwave-voxel"
+version = "0.1.0"
+dependencies = [
+ "rayon",
+ "shockwave-core",
 ]

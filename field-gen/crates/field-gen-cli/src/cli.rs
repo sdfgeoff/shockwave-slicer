@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use crate::geometry::Vec3;
+use shockwave_core::geometry::Vec3;
 
 #[derive(Clone, Debug)]
 pub struct Config {
@@ -12,6 +12,7 @@ pub struct Config {
     pub origin: Option<Vec3>,
     pub field_enabled: bool,
     pub field_rate: Vec3,
+    pub iso_spacing: f64,
 }
 
 pub fn parse_args(args: Vec<String>) -> Result<Config, String> {
@@ -31,6 +32,7 @@ pub fn parse_args(args: Vec<String>) -> Result<Config, String> {
         y: 1.0,
         z: 1.0,
     };
+    let mut iso_spacing = 0.5_f64;
     let mut index = 1;
 
     while index < args.len() {
@@ -58,6 +60,14 @@ pub fn parse_args(args: Vec<String>) -> Result<Config, String> {
             "--field-rate" => {
                 field_rate = parse_vec3_flag("--field-rate", &args, &mut index)?;
             }
+            "--iso-spacing" => {
+                index += 1;
+                iso_spacing = args
+                    .get(index)
+                    .ok_or_else(|| "--iso-spacing requires a positive numeric value".to_string())?
+                    .parse()
+                    .map_err(|_| "--iso-spacing must be numeric".to_string())?;
+            }
             "--output" | "-o" => {
                 index += 1;
                 output_prefix = args
@@ -78,6 +88,9 @@ pub fn parse_args(args: Vec<String>) -> Result<Config, String> {
         validate_positive_vec3("--size", size)?;
     }
     validate_positive_vec3("--field-rate", field_rate)?;
+    if iso_spacing <= 0.0 || !iso_spacing.is_finite() {
+        return Err("--iso-spacing must be greater than zero".to_string());
+    }
 
     Ok(Config {
         input,
@@ -88,6 +101,7 @@ pub fn parse_args(args: Vec<String>) -> Result<Config, String> {
         origin,
         field_enabled,
         field_rate,
+        iso_spacing,
     })
 }
 
@@ -119,11 +133,12 @@ fn validate_positive_vec3(name: &str, value: Vec3) -> Result<(), String> {
 }
 
 fn usage() -> String {
-    "usage: field-gen <input.stl> --voxel <x-mm> <y-mm> <z-mm> [--size <x-mm> <y-mm> <z-mm>] [--padding-voxels <n>] [--origin <x-mm> <y-mm> <z-mm>] [--field] [--field-rate <x> <y> <z>] [--output <prefix>]\n\
+    "usage: field-gen <input.stl> --voxel <x-mm> <y-mm> <z-mm> [--size <x-mm> <y-mm> <z-mm>] [--padding-voxels <n>] [--origin <x-mm> <y-mm> <z-mm>] [--field] [--field-rate <x> <y> <z>] [--iso-spacing <distance>] [--output <prefix>]\n\
 \n\
 STL coordinates are assumed to be millimeters. If --size is provided, it is treated as a maximum grid size.\n\
 By default, the grid fits the STL bounds plus 3 voxels of padding on each side.\n\
 --field propagates an anisotropic field through occupied voxels from the lowest occupied Z slice.\n\
+--iso-spacing controls the spacing between exported isosurface levels when --field is enabled.\n\
 Voxel size takes priority: grid dimensions are ceil(size / voxel), so actual size may expand slightly."
         .to_string()
 }

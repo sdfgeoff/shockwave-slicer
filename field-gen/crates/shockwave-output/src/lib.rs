@@ -1,10 +1,10 @@
 use std::fs;
 use std::path::PathBuf;
 
-use crate::cli::Config;
-use crate::field::Field;
-use crate::geometry::Bounds;
-use crate::grid::Grid;
+use shockwave_core::geometry::{Bounds, Vec3};
+use shockwave_core::grid::Grid;
+use shockwave_iso::Mesh;
+use shockwave_voxel::field::Field;
 
 #[derive(Clone, Copy, Debug)]
 pub struct Atlas {
@@ -12,6 +12,16 @@ pub struct Atlas {
     pub rows: usize,
     pub width: usize,
     pub height: usize,
+}
+
+pub struct Metadata<'a> {
+    pub input: &'a str,
+    pub voxel_size: Vec3,
+    pub padding_voxels: usize,
+    pub field_enabled: bool,
+    pub field_rate: Vec3,
+    pub field_extension_voxels: usize,
+    pub iso_spacing: f64,
 }
 
 pub fn build_atlas(grid: Grid) -> Atlas {
@@ -101,6 +111,29 @@ pub fn write_occupancy_bmp(
     fs::write(path, bytes).map_err(|error| error.to_string())
 }
 
+pub fn write_obj(path: &PathBuf, mesh: &Mesh) -> Result<(), String> {
+    let mut text = String::new();
+    text.push_str("# shockwave-layers generated isosurfaces\n");
+
+    for vertex in &mesh.vertices {
+        text.push_str(&format!(
+            "v {:.9} {:.9} {:.9}\n",
+            vertex.x, vertex.y, vertex.z
+        ));
+    }
+
+    for triangle in &mesh.triangles {
+        text.push_str(&format!(
+            "f {} {} {}\n",
+            triangle[0] + 1,
+            triangle[1] + 1,
+            triangle[2] + 1
+        ));
+    }
+
+    fs::write(path, text).map_err(|error| error.to_string())
+}
+
 fn encode_field_distance(field: &Field, index: usize) -> u8 {
     let distance = field.distances[index];
     if !distance.is_finite() || field.max_distance <= 0.0 {
@@ -111,14 +144,14 @@ fn encode_field_distance(field: &Field, index: usize) -> u8 {
 }
 
 pub fn metadata_json(
-    config: &Config,
+    metadata: &Metadata<'_>,
     bounds: Bounds,
     grid: Grid,
     atlas: Atlas,
     volume_path: &PathBuf,
     image_path: &PathBuf,
+    mesh_path: Option<&PathBuf>,
     field: Option<&Field>,
-    field_extension_voxels: usize,
     occupied_count: usize,
     voxel_count: usize,
 ) -> String {
@@ -130,6 +163,7 @@ pub fn metadata_json(
             "  \"layout\": \"x-fastest-u8\",\n",
             "  \"occupancy_file\": \"{}\",\n",
             "  \"image_file\": \"{}\",\n",
+            "  \"isosurface_file\": {},\n",
             "  \"image_format\": \"bmp-r-field-g-occupancy-slice-atlas\",\n",
             "  \"image_grid\": [{}, {}],\n",
             "  \"image_size_px\": [{}, {}],\n",
@@ -139,6 +173,7 @@ pub fn metadata_json(
             "  \"field_enabled\": {},\n",
             "  \"field_rate\": [{:.9}, {:.9}, {:.9}],\n",
             "  \"field_extension_voxels\": {},\n",
+            "  \"iso_spacing\": {},\n",
             "  \"field_max_distance\": {},\n",
             "  \"origin_mm\": [{:.9}, {:.9}, {:.9}],\n",
             "  \"actual_size_mm\": [{:.9}, {:.9}, {:.9}],\n",
@@ -148,9 +183,10 @@ pub fn metadata_json(
             "  \"total_voxels\": {}\n",
             "}}\n"
         ),
-        json_escape(&config.input.display().to_string()),
+        json_escape(metadata.input),
         json_escape(&volume_path.display().to_string()),
         json_escape(&image_path.display().to_string()),
+        path_json(mesh_path),
         atlas.columns,
         atlas.rows,
         atlas.width,
@@ -158,18 +194,23 @@ pub fn metadata_json(
         grid.dims[0],
         grid.dims[1],
         grid.dims[2],
-        grid.voxel_size.x,
-        grid.voxel_size.y,
-        grid.voxel_size.z,
-        config.padding_voxels,
-        config.field_enabled,
-        config.field_rate.x,
-        config.field_rate.y,
-        config.field_rate.z,
-        if config.field_enabled {
-            field_extension_voxels
+        metadata.voxel_size.x,
+        metadata.voxel_size.y,
+        metadata.voxel_size.z,
+        metadata.padding_voxels,
+        metadata.field_enabled,
+        metadata.field_rate.x,
+        metadata.field_rate.y,
+        metadata.field_rate.z,
+        if metadata.field_enabled {
+            metadata.field_extension_voxels
         } else {
             0
+        },
+        if metadata.field_enabled {
+            format!("{:.9}", metadata.iso_spacing)
+        } else {
+            "null".to_string()
         },
         field_max_distance_json(field),
         grid.origin.x,
@@ -191,6 +232,11 @@ pub fn metadata_json(
 
 fn json_escape(value: &str) -> String {
     value.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+fn path_json(path: Option<&PathBuf>) -> String {
+    path.map(|path| format!("\"{}\"", json_escape(&path.display().to_string())))
+        .unwrap_or_else(|| "null".to_string())
 }
 
 fn field_max_distance_json(field: Option<&Field>) -> String {

@@ -1,4 +1,4 @@
-use crate::geometry::{Triangle, Vec3};
+use shockwave_core::geometry::{Triangle, Vec3};
 
 pub fn parse_stl(bytes: &[u8]) -> Result<Vec<Triangle>, String> {
     if let Some(triangles) = parse_binary_stl(bytes)? {

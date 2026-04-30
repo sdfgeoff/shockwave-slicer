@@ -1,8 +1,8 @@
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
 
-use crate::geometry::Vec3;
-use crate::grid::Grid;
+use shockwave_core::geometry::Vec3;
+use shockwave_core::grid::Grid;
 
 #[derive(Clone, Debug)]
 pub struct Field {

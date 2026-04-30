@@ -13,9 +13,10 @@ FIELD ?= 1
 FIELD_RATE_X ?= 3.7
 FIELD_RATE_Y ?= 3.7
 FIELD_RATE_Z ?= 1
+ISO_SPACING ?= 25.0
 
 VOXEL_GEN := field-gen/target/release/field-gen
-FIELD_GEN_SOURCES := $(shell find field-gen/src -type f 2>/dev/null)
+FIELD_GEN_SOURCES := $(shell find field-gen/crates -type f 2>/dev/null)
 
 .PHONY: all voxels clean list-inputs
 
@@ -42,6 +43,7 @@ voxels: $(VOXEL_GEN)
 			--voxel "$(VOXEL_X)" "$(VOXEL_Y)" "$(VOXEL_Z)" \
 			--size "$(SIZE_X)" "$(SIZE_Y)" "$(SIZE_Z)" \
 			--padding-voxels "$(PADDING_VOXELS)" \
+			--iso-spacing "$(ISO_SPACING)" \
 			$$field_args \
 			--output "$(OUTPUT_DIR)/$$name"; \
 	done; \

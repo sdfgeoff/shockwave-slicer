@@ -1,0 +1,8 @@
+[package]
+name = "shockwave-iso"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+shockwave-core = { path = "../shockwave-core" }
+shockwave-voxel = { path = "../shockwave-voxel" }

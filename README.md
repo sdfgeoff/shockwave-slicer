@@ -48,6 +48,7 @@ image_size_px: atlas pixel size
 field_enabled: whether R contains a propagated field
 field_rate: anisotropic propagation rates used by field-gen
 field_extension_voxels: number of voxels the field was extended beyond occupancy
+iso_spacing: distance between exported isosurface levels, when field output is enabled
 field_max_distance: value used to normalize R into 0..255
 ```
 

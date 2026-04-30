@@ -1,21 +1,18 @@
 mod cli;
-mod field;
-mod geometry;
-mod grid;
-mod output;
-mod stl;
-mod voxelize;
 
 use std::env;
 use std::fs;
 
 use cli::parse_args;
-use field::{AnisotropicEuclideanPropagation, expand_field, propagate_field};
-use geometry::mesh_bounds;
-use grid::build_grid;
-use output::{build_atlas, metadata_json, write_occupancy_bmp};
-use stl::parse_stl;
-use voxelize::generate_occupancy;
+use shockwave_core::geometry::{Triangle, mesh_bounds};
+use shockwave_core::grid::{Grid, GridSpec, build_grid};
+use shockwave_iso::extract_regular_isosurfaces;
+use shockwave_output::{Metadata, build_atlas, metadata_json, write_obj, write_occupancy_bmp};
+use shockwave_stl::parse_stl;
+use shockwave_voxel::field::{
+    AnisotropicEuclideanPropagation, Field, expand_field, propagate_field,
+};
+use shockwave_voxel::voxelize::generate_occupancy;
 
 const FIELD_EXTENSION_VOXELS: usize = 2;
 
@@ -35,7 +32,7 @@ fn run() -> Result<(), String> {
     Ok(())
 }
 
-fn load_mesh(config: &cli::Config) -> Result<Vec<geometry::Triangle>, String> {
+fn load_mesh(config: &cli::Config) -> Result<Vec<Triangle>, String> {
     let bytes = fs::read(&config.input)
         .map_err(|error| format!("failed to read {}: {error}", config.input.display()))?;
     let triangles = parse_stl(&bytes)?;
@@ -47,10 +44,18 @@ fn load_mesh(config: &cli::Config) -> Result<Vec<geometry::Triangle>, String> {
 
 fn voxelize(
     config: &cli::Config,
-    triangles: &[geometry::Triangle],
-) -> Result<(grid::Grid, Vec<u8>, Option<field::Field>), String> {
+    triangles: &[Triangle],
+) -> Result<(Grid, Vec<u8>, Option<Field>), String> {
     let bounds = mesh_bounds(triangles);
-    let grid = build_grid(config, bounds)?;
+    let grid = build_grid(
+        GridSpec {
+            voxel_size: config.voxel_size,
+            requested_size: config.requested_size,
+            padding_voxels: config.padding_voxels,
+            origin: config.origin,
+        },
+        bounds,
+    )?;
     let occupancy = generate_occupancy(triangles, grid);
     let field = if config.field_enabled {
         let propagation = AnisotropicEuclideanPropagation::new(config.field_rate);
@@ -66,15 +71,16 @@ fn voxelize(
 struct OutputPaths {
     volume: std::path::PathBuf,
     image: std::path::PathBuf,
+    mesh: Option<std::path::PathBuf>,
     metadata: std::path::PathBuf,
 }
 
 fn write_outputs(
     config: &cli::Config,
-    triangles: &[geometry::Triangle],
+    triangles: &[Triangle],
     occupancy: &[u8],
-    field: &Option<field::Field>,
-    grid: grid::Grid,
+    field: &Option<Field>,
+    grid: Grid,
 ) -> Result<OutputPaths, String> {
     let bounds = mesh_bounds(triangles);
     let atlas = build_atlas(grid);
@@ -82,23 +88,41 @@ fn write_outputs(
 
     let volume_path = config.output_prefix.with_extension("occ");
     let image_path = config.output_prefix.with_extension("bmp");
+    let mesh_path = field
+        .as_ref()
+        .map(|_| config.output_prefix.with_extension("obj"));
     let metadata_path = config.output_prefix.with_extension("json");
 
     fs::write(&volume_path, occupancy)
         .map_err(|error| format!("failed to write {}: {error}", volume_path.display()))?;
     write_occupancy_bmp(&image_path, occupancy, field.as_ref(), grid, atlas)
         .map_err(|error| format!("failed to write {}: {error}", image_path.display()))?;
+
+    if let (Some(field), Some(mesh_path)) = (field.as_ref(), mesh_path.as_ref()) {
+        let mesh = extract_regular_isosurfaces(field, grid, config.iso_spacing)?;
+        write_obj(mesh_path, &mesh)
+            .map_err(|error| format!("failed to write {}: {error}", mesh_path.display()))?;
+    }
+
     fs::write(
         &metadata_path,
         metadata_json(
-            config,
+            &Metadata {
+                input: &config.input.display().to_string(),
+                voxel_size: config.voxel_size,
+                padding_voxels: config.padding_voxels,
+                field_enabled: config.field_enabled,
+                field_rate: config.field_rate,
+                field_extension_voxels: FIELD_EXTENSION_VOXELS,
+                iso_spacing: config.iso_spacing,
+            },
             bounds,
             grid,
             atlas,
             &volume_path,
             &image_path,
+            mesh_path.as_ref(),
             field.as_ref(),
-            FIELD_EXTENSION_VOXELS,
             occupied_count,
             occupancy.len(),
         ),
@@ -108,16 +132,12 @@ fn write_outputs(
     Ok(OutputPaths {
         volume: volume_path,
         image: image_path,
+        mesh: mesh_path,
         metadata: metadata_path,
     })
 }
 
-fn print_summary(
-    triangles: &[geometry::Triangle],
-    occupancy: &[u8],
-    grid: grid::Grid,
-    paths: &OutputPaths,
-) {
+fn print_summary(triangles: &[Triangle], occupancy: &[u8], grid: Grid, paths: &OutputPaths) {
     let occupied_count = occupancy.iter().filter(|value| **value != 0).count();
     println!("Loaded {} triangles", triangles.len());
     println!(
@@ -135,5 +155,8 @@ fn print_summary(
     println!("Occupied: {occupied_count} / {}", occupancy.len());
     println!("Wrote {}", paths.volume.display());
     println!("Wrote {}", paths.image.display());
+    if let Some(mesh) = &paths.mesh {
+        println!("Wrote {}", mesh.display());
+    }
     println!("Wrote {}", paths.metadata.display());
 }

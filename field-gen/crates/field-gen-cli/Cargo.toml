@@ -1,0 +1,11 @@
+[package]
+name = "field-gen"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+shockwave-core = { path = "../shockwave-core" }
+shockwave-iso = { path = "../shockwave-iso" }
+shockwave-output = { path = "../shockwave-output" }
+shockwave-stl = { path = "../shockwave-stl" }
+shockwave-voxel = { path = "../shockwave-voxel" }

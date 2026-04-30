@@ -1,7 +1,14 @@
-[package]
-name = "field-gen"
+[workspace]
+members = [
+    "crates/field-gen-cli",
+    "crates/shockwave-core",
+    "crates/shockwave-iso",
+    "crates/shockwave-output",
+    "crates/shockwave-stl",
+    "crates/shockwave-voxel",
+]
+resolver = "3"
+
+[workspace.package]
 version = "0.1.0"
 edition = "2024"
-
-[dependencies]
-rayon = "1.10"

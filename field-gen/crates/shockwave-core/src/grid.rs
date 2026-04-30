@@ -1,4 +1,3 @@
-use crate::cli::Config;
 use crate::geometry::{Bounds, Vec3};
 
 #[derive(Clone, Copy, Debug)]
@@ -23,19 +22,27 @@ impl Grid {
     }
 }
 
-pub fn build_grid(config: &Config, bounds: Bounds) -> Result<Grid, String> {
+#[derive(Clone, Copy, Debug)]
+pub struct GridSpec {
+    pub voxel_size: Vec3,
+    pub requested_size: Option<Vec3>,
+    pub padding_voxels: usize,
+    pub origin: Option<Vec3>,
+}
+
+pub fn build_grid(spec: GridSpec, bounds: Bounds) -> Result<Grid, String> {
     let model_size = bounds.max.sub(bounds.min);
     let padding_size = Vec3 {
-        x: config.padding_voxels as f64 * config.voxel_size.x * 2.0,
-        y: config.padding_voxels as f64 * config.voxel_size.y * 2.0,
-        z: config.padding_voxels as f64 * config.voxel_size.z * 2.0,
+        x: spec.padding_voxels as f64 * spec.voxel_size.x * 2.0,
+        y: spec.padding_voxels as f64 * spec.voxel_size.y * 2.0,
+        z: spec.padding_voxels as f64 * spec.voxel_size.z * 2.0,
     };
     let padded_size = Vec3 {
         x: model_size.x + padding_size.x,
         y: model_size.y + padding_size.y,
         z: model_size.z + padding_size.z,
     };
-    let size = if let Some(maximum_size) = config.requested_size {
+    let size = if let Some(maximum_size) = spec.requested_size {
         Vec3 {
             x: padded_size.x.min(maximum_size.x),
             y: padded_size.y.min(maximum_size.y),
@@ -45,21 +52,21 @@ pub fn build_grid(config: &Config, bounds: Bounds) -> Result<Grid, String> {
         padded_size
     };
     let dims = [
-        ceil_to_usize(size.x / config.voxel_size.x, "x dimension")?,
-        ceil_to_usize(size.y / config.voxel_size.y, "y dimension")?,
-        ceil_to_usize(size.z / config.voxel_size.z, "z dimension")?,
+        ceil_to_usize(size.x / spec.voxel_size.x, "x dimension")?,
+        ceil_to_usize(size.y / spec.voxel_size.y, "y dimension")?,
+        ceil_to_usize(size.z / spec.voxel_size.z, "z dimension")?,
     ];
     let actual_size = Vec3 {
-        x: dims[0] as f64 * config.voxel_size.x,
-        y: dims[1] as f64 * config.voxel_size.y,
-        z: dims[2] as f64 * config.voxel_size.z,
+        x: dims[0] as f64 * spec.voxel_size.x,
+        y: dims[1] as f64 * spec.voxel_size.y,
+        z: dims[2] as f64 * spec.voxel_size.z,
     };
     let model_center = Vec3 {
         x: (bounds.min.x + bounds.max.x) * 0.5,
         y: (bounds.min.y + bounds.max.y) * 0.5,
         z: (bounds.min.z + bounds.max.z) * 0.5,
     };
-    let origin = config.origin.unwrap_or(Vec3 {
+    let origin = spec.origin.unwrap_or(Vec3 {
         x: model_center.x - actual_size.x * 0.5,
         y: model_center.y - actual_size.y * 0.5,
         z: model_center.z - actual_size.z * 0.5,
@@ -68,7 +75,7 @@ pub fn build_grid(config: &Config, bounds: Bounds) -> Result<Grid, String> {
     Ok(Grid {
         origin,
         dims,
-        voxel_size: config.voxel_size,
+        voxel_size: spec.voxel_size,
         actual_size,
     })
 }
@@ -87,8 +94,6 @@ fn ceil_to_usize(value: f64, label: &str) -> Result<usize, String> {
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
-
     use super::*;
 
     fn v(x: f64, y: f64, z: f64) -> Vec3 {
@@ -97,22 +102,18 @@ mod tests {
 
     #[test]
     fn padded_grid_shrinks_below_requested_maximum() {
-        let config = Config {
-            input: PathBuf::from("mesh.stl"),
-            output_prefix: PathBuf::from("out"),
+        let spec = GridSpec {
             voxel_size: v(1.0, 1.0, 1.0),
             requested_size: Some(v(128.0, 128.0, 128.0)),
             padding_voxels: 3,
             origin: None,
-            field_enabled: false,
-            field_rate: v(1.0, 1.0, 1.0),
         };
         let bounds = Bounds {
             min: v(0.0, 0.0, 0.0),
             max: v(10.0, 10.0, 10.0),
         };
 
-        let grid = build_grid(&config, bounds).unwrap();
+        let grid = build_grid(spec, bounds).unwrap();
 
         assert_eq!(grid.dims, [16, 16, 16]);
         assert_eq!(grid.origin.x, -3.0);
@@ -125,22 +126,18 @@ mod tests {
 
     #[test]
     fn padded_grid_clamps_to_requested_maximum() {
-        let config = Config {
-            input: PathBuf::from("mesh.stl"),
-            output_prefix: PathBuf::from("out"),
+        let spec = GridSpec {
             voxel_size: v(0.4, 0.4, 0.4),
             requested_size: Some(v(100.0, 100.0, 100.0)),
             padding_voxels: 3,
             origin: None,
-            field_enabled: false,
-            field_rate: v(1.0, 1.0, 1.0),
         };
         let bounds = Bounds {
             min: v(0.0, 0.0, 0.0),
             max: v(120.0, 120.0, 120.0),
         };
 
-        let grid = build_grid(&config, bounds).unwrap();
+        let grid = build_grid(spec, bounds).unwrap();
 
         assert_eq!(grid.dims, [250, 250, 250]);
         assert_eq!(grid.actual_size.x, 100.0);
@@ -153,22 +150,18 @@ mod tests {
 
     #[test]
     fn explicit_origin_is_respected_when_grid_clamps() {
-        let config = Config {
-            input: PathBuf::from("mesh.stl"),
-            output_prefix: PathBuf::from("out"),
+        let spec = GridSpec {
             voxel_size: v(1.0, 1.0, 1.0),
             requested_size: Some(v(100.0, 100.0, 100.0)),
             padding_voxels: 3,
             origin: Some(v(-20.0, -10.0, 5.0)),
-            field_enabled: false,
-            field_rate: v(1.0, 1.0, 1.0),
         };
         let bounds = Bounds {
             min: v(0.0, 0.0, 0.0),
             max: v(120.0, 120.0, 120.0),
         };
 
-        let grid = build_grid(&config, bounds).unwrap();
+        let grid = build_grid(spec, bounds).unwrap();
 
         assert_eq!(grid.dims, [100, 100, 100]);
         assert_eq!(grid.origin.x, -20.0);

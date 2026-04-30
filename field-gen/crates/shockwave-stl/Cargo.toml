@@ -1,0 +1,7 @@
+[package]
+name = "shockwave-stl"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+shockwave-core = { path = "../shockwave-core" }

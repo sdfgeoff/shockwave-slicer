@@ -1,0 +1,8 @@
+[package]
+name = "shockwave-voxel"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+rayon = "1.10"
+shockwave-core = { path = "../shockwave-core" }
