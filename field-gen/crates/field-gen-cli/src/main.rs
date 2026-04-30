@@ -8,7 +8,9 @@ use cli::parse_args;
 use shockwave_core::geometry::{Triangle, mesh_bounds};
 use shockwave_core::grid::{Grid, GridSpec, build_grid};
 use shockwave_iso::extract_regular_isosurfaces;
-use shockwave_output::{Metadata, build_atlas, metadata_json, write_obj, write_occupancy_bmp};
+use shockwave_output::{
+    Metadata, MetadataDocument, build_atlas, metadata_json, write_obj, write_occupancy_bmp,
+};
 use shockwave_stl::parse_stl;
 use shockwave_voxel::field::{
     AnisotropicEuclideanPropagation, Field, expand_field, propagate_field,
@@ -142,8 +144,8 @@ fn write_outputs(
     let metadata_start = Instant::now();
     fs::write(
         &metadata_path,
-        metadata_json(
-            &Metadata {
+        metadata_json(&MetadataDocument {
+            metadata: Metadata {
                 input: &config.input.display().to_string(),
                 voxel_size: config.voxel_size,
                 padding_voxels: config.padding_voxels,
@@ -155,13 +157,13 @@ fn write_outputs(
             bounds,
             grid,
             atlas,
-            &volume_path,
-            &image_path,
-            mesh_path.as_ref(),
-            field.as_ref(),
+            volume_path: &volume_path,
+            image_path: &image_path,
+            mesh_path: mesh_path.as_deref(),
+            field: field.as_ref(),
             occupied_count,
-            occupancy.len(),
-        ),
+            voxel_count: occupancy.len(),
+        }),
     )
     .map_err(|error| format!("failed to write {}: {error}", metadata_path.display()))?;
     log_timing("write metadata", metadata_start.elapsed());

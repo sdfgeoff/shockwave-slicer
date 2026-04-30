@@ -309,11 +309,11 @@ fn crossing_levels(
     b: [usize; 3],
     spacing: f64,
     level_count: usize,
-) -> std::ops::RangeInclusive<usize> {
+) -> std::ops::Range<usize> {
     let value_a = field.distances[grid.index(a[0], a[1], a[2])];
     let value_b = field.distances[grid.index(b[0], b[1], b[2])];
     if !value_a.is_finite() || !value_b.is_finite() || value_a == value_b || level_count == 0 {
-        return 1..=0;
+        return 0..0;
     }
 
     let min_value = value_a.min(value_b);
@@ -321,7 +321,7 @@ fn crossing_levels(
     let first = ((min_value / spacing).floor() as usize + 1).max(1);
     let last = ((max_value / spacing).floor() as usize).min(level_count);
 
-    first..=last
+    first..last + 1
 }
 
 fn project_to_cell_field(

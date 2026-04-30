@@ -1,3 +1,5 @@
+use std::ops::Sub;
+
 #[derive(Clone, Copy, Debug)]
 pub struct Vec3 {
     pub x: f64,
@@ -21,8 +23,12 @@ impl Vec3 {
             z: self.z.max(other.z),
         }
     }
+}
 
-    pub fn sub(self, other: Self) -> Self {
+impl Sub for Vec3 {
+    type Output = Self;
+
+    fn sub(self, other: Self) -> Self {
         Self {
             x: self.x - other.x,
             y: self.y - other.y,

@@ -31,7 +31,7 @@ pub struct GridSpec {
 }
 
 pub fn build_grid(spec: GridSpec, bounds: Bounds) -> Result<Grid, String> {
-    let model_size = bounds.max.sub(bounds.min);
+    let model_size = bounds.max - bounds.min;
     let padding_size = Vec3 {
         x: spec.padding_voxels as f64 * spec.voxel_size.x * 2.0,
         y: spec.padding_voxels as f64 * spec.voxel_size.y * 2.0,

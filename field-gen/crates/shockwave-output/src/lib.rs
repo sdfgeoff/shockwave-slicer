@@ -1,5 +1,5 @@
 use std::fs;
-use std::path::PathBuf;
+use std::path::Path;
 
 use shockwave_core::geometry::{Bounds, Vec3};
 use shockwave_core::grid::Grid;
@@ -24,6 +24,19 @@ pub struct Metadata<'a> {
     pub iso_spacing: f64,
 }
 
+pub struct MetadataDocument<'a> {
+    pub metadata: Metadata<'a>,
+    pub bounds: Bounds,
+    pub grid: Grid,
+    pub atlas: Atlas,
+    pub volume_path: &'a Path,
+    pub image_path: &'a Path,
+    pub mesh_path: Option<&'a Path>,
+    pub field: Option<&'a Field>,
+    pub occupied_count: usize,
+    pub voxel_count: usize,
+}
+
 pub fn build_atlas(grid: Grid) -> Atlas {
     let columns = (grid.dims[2] as f64).sqrt().ceil() as usize;
     let rows = grid.dims[2].div_ceil(columns);
@@ -37,7 +50,7 @@ pub fn build_atlas(grid: Grid) -> Atlas {
 }
 
 pub fn write_occupancy_bmp(
-    path: &PathBuf,
+    path: &Path,
     occupancy: &[u8],
     field: Option<&Field>,
     grid: Grid,
@@ -111,7 +124,7 @@ pub fn write_occupancy_bmp(
     fs::write(path, bytes).map_err(|error| error.to_string())
 }
 
-pub fn write_obj(path: &PathBuf, surfaces: &IsosurfaceSet) -> Result<(), String> {
+pub fn write_obj(path: &Path, surfaces: &IsosurfaceSet) -> Result<(), String> {
     let mut text = String::new();
     text.push_str("# shockwave-layers generated isosurfaces\n");
     let mut vertex_offset = 0usize;
@@ -153,18 +166,7 @@ fn encode_field_distance(field: &Field, index: usize) -> u8 {
     ((distance / field.max_distance).clamp(0.0, 1.0) * 255.0).round() as u8
 }
 
-pub fn metadata_json(
-    metadata: &Metadata<'_>,
-    bounds: Bounds,
-    grid: Grid,
-    atlas: Atlas,
-    volume_path: &PathBuf,
-    image_path: &PathBuf,
-    mesh_path: Option<&PathBuf>,
-    field: Option<&Field>,
-    occupied_count: usize,
-    voxel_count: usize,
-) -> String {
+pub fn metadata_json(document: &MetadataDocument<'_>) -> String {
     format!(
         concat!(
             "{{\n",
@@ -193,50 +195,50 @@ pub fn metadata_json(
             "  \"total_voxels\": {}\n",
             "}}\n"
         ),
-        json_escape(metadata.input),
-        json_escape(&volume_path.display().to_string()),
-        json_escape(&image_path.display().to_string()),
-        path_json(mesh_path),
-        atlas.columns,
-        atlas.rows,
-        atlas.width,
-        atlas.height,
-        grid.dims[0],
-        grid.dims[1],
-        grid.dims[2],
-        metadata.voxel_size.x,
-        metadata.voxel_size.y,
-        metadata.voxel_size.z,
-        metadata.padding_voxels,
-        metadata.field_enabled,
-        metadata.field_rate.x,
-        metadata.field_rate.y,
-        metadata.field_rate.z,
-        if metadata.field_enabled {
-            metadata.field_extension_voxels
+        json_escape(document.metadata.input),
+        json_escape(&document.volume_path.display().to_string()),
+        json_escape(&document.image_path.display().to_string()),
+        path_json(document.mesh_path),
+        document.atlas.columns,
+        document.atlas.rows,
+        document.atlas.width,
+        document.atlas.height,
+        document.grid.dims[0],
+        document.grid.dims[1],
+        document.grid.dims[2],
+        document.metadata.voxel_size.x,
+        document.metadata.voxel_size.y,
+        document.metadata.voxel_size.z,
+        document.metadata.padding_voxels,
+        document.metadata.field_enabled,
+        document.metadata.field_rate.x,
+        document.metadata.field_rate.y,
+        document.metadata.field_rate.z,
+        if document.metadata.field_enabled {
+            document.metadata.field_extension_voxels
         } else {
             0
         },
-        if metadata.field_enabled {
-            format!("{:.9}", metadata.iso_spacing)
+        if document.metadata.field_enabled {
+            format!("{:.9}", document.metadata.iso_spacing)
         } else {
             "null".to_string()
         },
-        field_max_distance_json(field),
-        grid.origin.x,
-        grid.origin.y,
-        grid.origin.z,
-        grid.actual_size.x,
-        grid.actual_size.y,
-        grid.actual_size.z,
-        bounds.min.x,
-        bounds.min.y,
-        bounds.min.z,
-        bounds.max.x,
-        bounds.max.y,
-        bounds.max.z,
-        occupied_count,
-        voxel_count,
+        field_max_distance_json(document.field),
+        document.grid.origin.x,
+        document.grid.origin.y,
+        document.grid.origin.z,
+        document.grid.actual_size.x,
+        document.grid.actual_size.y,
+        document.grid.actual_size.z,
+        document.bounds.min.x,
+        document.bounds.min.y,
+        document.bounds.min.z,
+        document.bounds.max.x,
+        document.bounds.max.y,
+        document.bounds.max.z,
+        document.occupied_count,
+        document.voxel_count,
     )
 }
 
@@ -244,7 +246,7 @@ fn json_escape(value: &str) -> String {
     value.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
-fn path_json(path: Option<&PathBuf>) -> String {
+fn path_json(path: Option<&Path>) -> String {
     path.map(|path| format!("\"{}\"", json_escape(&path.display().to_string())))
         .unwrap_or_else(|| "null".to_string())
 }
