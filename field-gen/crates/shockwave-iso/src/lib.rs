@@ -8,5 +8,5 @@ mod interpolate;
 pub mod mesh;
 mod surface_nets;
 
-pub use mesh::{Isosurface, IsosurfaceSet, Mesh};
+pub use mesh::{Isosurface, IsosurfaceSet};
 pub use surface_nets::extract_regular_isosurfaces;

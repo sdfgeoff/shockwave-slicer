@@ -1,9 +1,8 @@
 [package]
-name = "shockwave-iso"
+name = "shockwave-clip"
 version.workspace = true
 edition.workspace = true
 
 [dependencies]
 shockwave-core = { path = "../shockwave-core" }
 shockwave-mesh = { path = "../shockwave-mesh" }
-shockwave-voxel = { path = "../shockwave-voxel" }

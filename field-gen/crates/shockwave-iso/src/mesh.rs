@@ -1,10 +1,4 @@
-use shockwave_core::geometry::Vec3;
-
-#[derive(Clone, Debug, Default)]
-pub struct Mesh {
-    pub vertices: Vec<Vec3>,
-    pub triangles: Vec<[usize; 3]>,
-}
+use shockwave_mesh::Mesh;
 
 #[derive(Clone, Debug)]
 pub struct Isosurface {

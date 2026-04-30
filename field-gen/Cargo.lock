@@ -65,6 +65,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "shockwave-clip"
+version = "0.1.0"
+dependencies = [
+ "shockwave-core",
+ "shockwave-mesh",
+]
+
+[[package]]
 name = "shockwave-core"
 version = "0.1.0"
 
@@ -73,7 +81,15 @@ name = "shockwave-iso"
 version = "0.1.0"
 dependencies = [
  "shockwave-core",
+ "shockwave-mesh",
  "shockwave-voxel",
+]
+
+[[package]]
+name = "shockwave-mesh"
+version = "0.1.0"
+dependencies = [
+ "shockwave-core",
 ]
 
 [[package]]
