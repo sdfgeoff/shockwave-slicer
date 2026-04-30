@@ -4,7 +4,7 @@
 //! Actual triangle splitting is intentionally kept separate so callers do not
 //! mistake "classified" triangles for a fully clipped layer mesh.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 mod aabb;
 mod classify;
@@ -19,7 +19,9 @@ pub use classify::{PointClassification, TriangleSolid};
 pub use intersect::{TriangleIntersection, triangles_intersect};
 
 const EPSILON: f64 = 1.0e-9;
-const VERTEX_MERGE_SCALE: f64 = 1.0e9;
+const SPLIT_DISTANCE_EPSILON: f64 = 1.0e-6;
+const PLANE_MERGE_SCALE: f64 = 1.0e6;
+const VERTEX_MERGE_SCALE: f64 = 1.0e6;
 
 #[derive(Clone, Debug)]
 pub struct MeshTriangleClassification {
@@ -43,8 +45,13 @@ pub fn clip_mesh_to_solid(mesh: &Mesh, solid: &TriangleSolid) -> Mesh {
             vertices: mesh.triangle_vertices(*indices),
         };
 
+        let mut splitter_planes = HashSet::new();
         let candidates = solid
             .intersecting_triangle_indices(&triangle)
+            .filter(|index| is_proper_splitter(&triangle, &solid.triangles()[*index]))
+            .filter(|index| {
+                splitter_planes.insert(PlaneKey::from_triangle(&solid.triangles()[*index]))
+            })
             .collect::<Vec<_>>();
         if candidates.is_empty() {
             if matches!(
@@ -99,6 +106,84 @@ fn classify_triangle(triangle: &Triangle, solid: &TriangleSolid) -> ClippingStat
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+struct PlaneKey {
+    nx: i64,
+    ny: i64,
+    nz: i64,
+    d: i64,
+}
+
+impl PlaneKey {
+    fn from_triangle(triangle: &Triangle) -> Self {
+        let normal = triangle_normal(triangle);
+        let length = length_squared(normal).sqrt();
+        if length <= EPSILON {
+            return Self {
+                nx: 0,
+                ny: 0,
+                nz: 0,
+                d: 0,
+            };
+        }
+
+        let mut nx = normal.x / length;
+        let mut ny = normal.y / length;
+        let mut nz = normal.z / length;
+        let mut d = -dot(
+            Vec3 {
+                x: nx,
+                y: ny,
+                z: nz,
+            },
+            triangle.vertices[0],
+        );
+
+        if nx < -EPSILON
+            || (nx.abs() <= EPSILON && ny < -EPSILON)
+            || (nx.abs() <= EPSILON && ny.abs() <= EPSILON && nz < -EPSILON)
+        {
+            nx = -nx;
+            ny = -ny;
+            nz = -nz;
+            d = -d;
+        }
+
+        Self {
+            nx: quantize_plane_coordinate(nx),
+            ny: quantize_plane_coordinate(ny),
+            nz: quantize_plane_coordinate(nz),
+            d: quantize_plane_coordinate(d),
+        }
+    }
+}
+
+fn is_proper_splitter(layer_triangle: &Triangle, solid_triangle: &Triangle) -> bool {
+    triangle_straddles_plane(layer_triangle, solid_triangle)
+        && triangle_straddles_plane(solid_triangle, layer_triangle)
+}
+
+fn triangle_straddles_plane(triangle: &Triangle, plane_triangle: &Triangle) -> bool {
+    let normal = triangle_normal(plane_triangle);
+    let normal_length = length_squared(normal).sqrt();
+    if normal_length <= EPSILON {
+        return false;
+    }
+
+    let tolerance = SPLIT_DISTANCE_EPSILON * normal_length;
+    let origin = plane_triangle.vertices[0];
+    let mut has_positive = false;
+    let mut has_negative = false;
+
+    for vertex in triangle.vertices {
+        let distance = dot(sub(vertex, origin), normal);
+        has_positive |= distance > tolerance;
+        has_negative |= distance < -tolerance;
+    }
+
+    has_positive && has_negative
+}
+
 fn clip_triangle_to_solid(
     triangle: &Triangle,
     solid: &TriangleSolid,
@@ -143,25 +228,31 @@ fn split_polygon_by_triangle_plane(polygon: &[Vec3], splitter: &Triangle) -> Vec
     }
 
     let origin = splitter.vertices[0];
+    let tolerance = SPLIT_DISTANCE_EPSILON * length_squared(normal).sqrt();
     let distances: Vec<f64> = polygon
         .iter()
         .map(|vertex| dot(sub(*vertex, origin), normal))
         .collect();
-    let has_positive = distances.iter().any(|distance| *distance > EPSILON);
-    let has_negative = distances.iter().any(|distance| *distance < -EPSILON);
+    let has_positive = distances.iter().any(|distance| *distance > tolerance);
+    let has_negative = distances.iter().any(|distance| *distance < -tolerance);
     if !has_positive || !has_negative {
         return vec![polygon.to_vec()];
     }
 
-    let positive = clip_polygon_to_plane(polygon, &distances, true);
-    let negative = clip_polygon_to_plane(polygon, &distances, false);
+    let positive = clip_polygon_to_plane(polygon, &distances, tolerance, true);
+    let negative = clip_polygon_to_plane(polygon, &distances, tolerance, false);
     [positive, negative]
         .into_iter()
         .filter(|fragment| fragment.len() >= 3)
         .collect()
 }
 
-fn clip_polygon_to_plane(polygon: &[Vec3], distances: &[f64], keep_positive: bool) -> Vec<Vec3> {
+fn clip_polygon_to_plane(
+    polygon: &[Vec3],
+    distances: &[f64],
+    tolerance: f64,
+    keep_positive: bool,
+) -> Vec<Vec3> {
     let mut clipped = Vec::new();
 
     for index in 0..polygon.len() {
@@ -170,8 +261,8 @@ fn clip_polygon_to_plane(polygon: &[Vec3], distances: &[f64], keep_positive: boo
         let next_vertex = polygon[next];
         let current_distance = distances[index];
         let next_distance = distances[next];
-        let current_inside = plane_side_inside(current_distance, keep_positive);
-        let next_inside = plane_side_inside(next_distance, keep_positive);
+        let current_inside = plane_side_inside(current_distance, tolerance, keep_positive);
+        let next_inside = plane_side_inside(next_distance, tolerance, keep_positive);
 
         if current_inside {
             clipped.push(current);
@@ -190,11 +281,11 @@ fn clip_polygon_to_plane(polygon: &[Vec3], distances: &[f64], keep_positive: boo
     deduplicate_adjacent_vertices(clipped)
 }
 
-fn plane_side_inside(distance: f64, keep_positive: bool) -> bool {
+fn plane_side_inside(distance: f64, tolerance: f64, keep_positive: bool) -> bool {
     if keep_positive {
-        distance >= -EPSILON
+        distance >= -tolerance
     } else {
-        distance <= EPSILON
+        distance <= tolerance
     }
 }
 
@@ -282,6 +373,10 @@ impl VertexKey {
 
 fn quantize_coordinate(value: f64) -> i64 {
     (value * VERTEX_MERGE_SCALE).round() as i64
+}
+
+fn quantize_plane_coordinate(value: f64) -> i64 {
+    (value * PLANE_MERGE_SCALE).round() as i64
 }
 
 fn push_triangle(mesh: &mut Mesh, vertices: &mut VertexMap, triangle: [Vec3; 3]) {

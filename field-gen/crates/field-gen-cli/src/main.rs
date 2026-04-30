@@ -5,6 +5,7 @@ use std::fs;
 use std::time::{Duration, Instant};
 
 use cli::parse_args;
+use rayon::prelude::*;
 use shockwave_clip::{TriangleSolid, clip_mesh_to_solid};
 use shockwave_core::geometry::{Triangle, mesh_bounds};
 use shockwave_core::grid::{Grid, GridSpec, build_grid};
@@ -206,7 +207,7 @@ fn clip_isosurfaces_to_solid(surfaces: &IsosurfaceSet, triangles: &[Triangle]) -
     IsosurfaceSet {
         surfaces: surfaces
             .surfaces
-            .iter()
+            .par_iter()
             .map(|surface| Isosurface {
                 level: surface.level,
                 value: surface.value,
