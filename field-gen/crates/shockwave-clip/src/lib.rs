@@ -42,7 +42,21 @@ pub fn clip_mesh_to_solid(mesh: &Mesh, solid: &TriangleSolid) -> Mesh {
         let triangle = Triangle {
             vertices: mesh.triangle_vertices(*indices),
         };
-        for fragment in clip_triangle_to_solid(&triangle, solid) {
+
+        let candidates = solid
+            .intersecting_triangle_indices(&triangle)
+            .collect::<Vec<_>>();
+        if candidates.is_empty() {
+            if matches!(
+                solid.classify_point(triangle_centroid(&triangle)),
+                PointClassification::Inside | PointClassification::Boundary
+            ) {
+                push_triangle(&mut clipped, &mut vertices, triangle.vertices);
+            }
+            continue;
+        }
+
+        for fragment in clip_triangle_to_solid(&triangle, solid, &candidates) {
             push_triangle(&mut clipped, &mut vertices, fragment);
         }
     }
@@ -85,11 +99,15 @@ fn classify_triangle(triangle: &Triangle, solid: &TriangleSolid) -> ClippingStat
     }
 }
 
-fn clip_triangle_to_solid(triangle: &Triangle, solid: &TriangleSolid) -> Vec<[Vec3; 3]> {
+fn clip_triangle_to_solid(
+    triangle: &Triangle,
+    solid: &TriangleSolid,
+    solid_triangle_indices: &[usize],
+) -> Vec<[Vec3; 3]> {
     let mut fragments = vec![triangle.vertices.to_vec()];
 
-    for solid_triangle_index in solid.intersecting_triangle_indices(triangle) {
-        let splitter = &solid.triangles()[solid_triangle_index];
+    for solid_triangle_index in solid_triangle_indices {
+        let splitter = &solid.triangles()[*solid_triangle_index];
         let mut split_fragments = Vec::new();
 
         for fragment in fragments {
@@ -490,5 +508,56 @@ mod tests {
 
         assert_eq!(clipped.triangles.len(), 2);
         assert_eq!(clipped.vertices.len(), 4);
+    }
+
+    #[test]
+    fn keeps_inside_triangle_without_boundary_splitting() {
+        let solid = TriangleSolid::new(vec![
+            Triangle {
+                vertices: [v(0.0, 0.0, 0.0), v(2.0, 0.0, 0.0), v(0.0, 2.0, 0.0)],
+            },
+            Triangle {
+                vertices: [v(2.0, 0.0, 0.0), v(2.0, 2.0, 0.0), v(0.0, 2.0, 0.0)],
+            },
+            Triangle {
+                vertices: [v(0.0, 0.0, 2.0), v(0.0, 2.0, 2.0), v(2.0, 0.0, 2.0)],
+            },
+            Triangle {
+                vertices: [v(2.0, 0.0, 2.0), v(0.0, 2.0, 2.0), v(2.0, 2.0, 2.0)],
+            },
+            Triangle {
+                vertices: [v(0.0, 0.0, 0.0), v(0.0, 0.0, 2.0), v(2.0, 0.0, 0.0)],
+            },
+            Triangle {
+                vertices: [v(2.0, 0.0, 0.0), v(0.0, 0.0, 2.0), v(2.0, 0.0, 2.0)],
+            },
+            Triangle {
+                vertices: [v(0.0, 2.0, 0.0), v(2.0, 2.0, 0.0), v(0.0, 2.0, 2.0)],
+            },
+            Triangle {
+                vertices: [v(2.0, 2.0, 0.0), v(2.0, 2.0, 2.0), v(0.0, 2.0, 2.0)],
+            },
+            Triangle {
+                vertices: [v(0.0, 0.0, 0.0), v(0.0, 2.0, 0.0), v(0.0, 0.0, 2.0)],
+            },
+            Triangle {
+                vertices: [v(0.0, 2.0, 0.0), v(0.0, 2.0, 2.0), v(0.0, 0.0, 2.0)],
+            },
+            Triangle {
+                vertices: [v(2.0, 0.0, 0.0), v(2.0, 0.0, 2.0), v(2.0, 2.0, 0.0)],
+            },
+            Triangle {
+                vertices: [v(2.0, 2.0, 0.0), v(2.0, 0.0, 2.0), v(2.0, 2.0, 2.0)],
+            },
+        ]);
+        let mesh = Mesh {
+            vertices: vec![v(0.5, 0.5, 1.0), v(1.5, 0.5, 1.0), v(0.5, 1.5, 1.0)],
+            triangles: vec![[0, 1, 2]],
+        };
+
+        let clipped = clip_mesh_to_solid(&mesh, &solid);
+
+        assert_eq!(clipped.triangles, vec![[0, 1, 2]]);
+        assert_eq!(clipped.vertices.len(), 3);
     }
 }
