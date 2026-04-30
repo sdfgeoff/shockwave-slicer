@@ -118,6 +118,7 @@ pub fn metadata_json(
     volume_path: &PathBuf,
     image_path: &PathBuf,
     field: Option<&Field>,
+    field_extension_voxels: usize,
     occupied_count: usize,
     voxel_count: usize,
 ) -> String {
@@ -137,6 +138,7 @@ pub fn metadata_json(
             "  \"padding_voxels\": {},\n",
             "  \"field_enabled\": {},\n",
             "  \"field_rate\": [{:.9}, {:.9}, {:.9}],\n",
+            "  \"field_extension_voxels\": {},\n",
             "  \"field_max_distance\": {},\n",
             "  \"origin_mm\": [{:.9}, {:.9}, {:.9}],\n",
             "  \"actual_size_mm\": [{:.9}, {:.9}, {:.9}],\n",
@@ -164,6 +166,11 @@ pub fn metadata_json(
         config.field_rate.x,
         config.field_rate.y,
         config.field_rate.z,
+        if config.field_enabled {
+            field_extension_voxels
+        } else {
+            0
+        },
         field_max_distance_json(field),
         grid.origin.x,
         grid.origin.y,

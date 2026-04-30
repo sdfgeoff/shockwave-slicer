@@ -10,12 +10,14 @@ use std::env;
 use std::fs;
 
 use cli::parse_args;
-use field::{AnisotropicEuclideanPropagation, propagate_field};
+use field::{AnisotropicEuclideanPropagation, expand_field, propagate_field};
 use geometry::mesh_bounds;
 use grid::build_grid;
 use output::{build_atlas, metadata_json, write_occupancy_bmp};
 use stl::parse_stl;
 use voxelize::generate_occupancy;
+
+const FIELD_EXTENSION_VOXELS: usize = 2;
 
 fn main() {
     if let Err(error) = run() {
@@ -51,11 +53,10 @@ fn voxelize(
     let grid = build_grid(config, bounds)?;
     let occupancy = generate_occupancy(triangles, grid);
     let field = if config.field_enabled {
-        Some(propagate_field(
-            &occupancy,
-            grid,
-            &AnisotropicEuclideanPropagation::new(config.field_rate),
-        )?)
+        let propagation = AnisotropicEuclideanPropagation::new(config.field_rate);
+        let mut field = propagate_field(&occupancy, grid, &propagation)?;
+        expand_field(&mut field, grid, FIELD_EXTENSION_VOXELS, &propagation);
+        Some(field)
     } else {
         None
     };
@@ -97,6 +98,7 @@ fn write_outputs(
             &volume_path,
             &image_path,
             field.as_ref(),
+            FIELD_EXTENSION_VOXELS,
             occupied_count,
             occupancy.len(),
         ),

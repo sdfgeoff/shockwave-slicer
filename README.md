@@ -33,6 +33,8 @@ When field generation is disabled, older/generated occupancy-only BMPs may have 
 
 The field value is normalized by `field_max_distance` in the JSON metadata. This means the 8-bit BMP is convenient for preview and WebGL viewing, but it is not a high-precision field storage format. Future TIFF or raw higher-bit-depth output should preserve the same semantic channels unless the metadata says otherwise.
 
+When field generation is enabled, the propagated field is computed through occupied voxels first, then extended two voxels into neighboring empty space. The occupancy channel remains the authoritative object mask. The field extension exists so viewers can estimate derivatives at the occupancy boundary without sampling missing field values.
+
 ## Metadata
 
 The JSON sidecar records the values needed to interpret the atlas:
@@ -45,6 +47,7 @@ image_grid: [columns, rows] atlas cell grid
 image_size_px: atlas pixel size
 field_enabled: whether R contains a propagated field
 field_rate: anisotropic propagation rates used by field-gen
+field_extension_voxels: number of voxels the field was extended beyond occupancy
 field_max_distance: value used to normalize R into 0..255
 ```
 
@@ -52,4 +55,4 @@ STL coordinates are assumed to be millimeters.
 
 ## Viewer Interpretation
 
-`field-viewer` has a `Field + Occupancy` data mode matching the generated format. In 3D, it samples `R` as the field and uses `G` as the occupancy/validity mask. Field interpolation is occupancy-aware so empty voxels do not create false intermediate isosurfaces at mesh boundaries.
+`field-viewer` has a `Field + Occupancy` data mode matching the generated format. In 3D, it samples `R` as the field, uses `G` as the occupancy clipping mask, and lights the rendered surface from the combined threshold/occupancy predicate.

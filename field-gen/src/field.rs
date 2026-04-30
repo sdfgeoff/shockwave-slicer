@@ -139,6 +139,35 @@ pub fn propagate_field(
     })
 }
 
+pub fn expand_field(field: &mut Field, grid: Grid, layers: usize, method: &impl PropagationMethod) {
+    for _ in 0..layers {
+        let previous_distances = field.distances.clone();
+        let mut next_distances = previous_distances.clone();
+
+        for (index, distance) in previous_distances.iter().copied().enumerate() {
+            if !distance.is_finite() {
+                continue;
+            }
+
+            for (neighbor, cost) in method.neighbors(index, grid) {
+                let next_distance = distance + cost;
+                if next_distance < next_distances[neighbor] {
+                    next_distances[neighbor] = next_distance;
+                }
+            }
+        }
+
+        field.distances = next_distances;
+    }
+
+    field.max_distance = field
+        .distances
+        .iter()
+        .copied()
+        .filter(|value| value.is_finite())
+        .fold(0.0, f64::max);
+}
+
 fn movement_cost(dx: isize, dy: isize, dz: isize, grid: Grid, rate: Vec3) -> f64 {
     let x = dx as f64 * grid.voxel_size.x / rate.x;
     let y = dy as f64 * grid.voxel_size.y / rate.y;
@@ -249,5 +278,29 @@ mod tests {
         assert!((movement_cost(1, 0, 0, grid, rate) - 0.1).abs() < 1.0e-9);
         assert!((movement_cost(0, 1, 0, grid, rate) - 0.2).abs() < 1.0e-9);
         assert!((movement_cost(1, 1, 0, grid, rate) - (0.05_f64).sqrt()).abs() < 1.0e-9);
+    }
+
+    #[test]
+    fn expands_field_by_requested_layers_without_changing_occupancy_requirement() {
+        let grid = grid([5, 1, 1]);
+        let mut field = Field {
+            distances: vec![f64::INFINITY; grid.voxel_count()],
+            max_distance: 0.0,
+        };
+        field.distances[grid.index(2, 0, 0)] = 0.0;
+        let propagation = AnisotropicEuclideanPropagation::new(Vec3 {
+            x: 1.0,
+            y: 1.0,
+            z: 1.0,
+        });
+
+        expand_field(&mut field, grid, 2, &propagation);
+
+        assert_eq!(field.distances[grid.index(0, 0, 0)], 2.0);
+        assert_eq!(field.distances[grid.index(1, 0, 0)], 1.0);
+        assert_eq!(field.distances[grid.index(2, 0, 0)], 0.0);
+        assert_eq!(field.distances[grid.index(3, 0, 0)], 1.0);
+        assert_eq!(field.distances[grid.index(4, 0, 0)], 2.0);
+        assert_eq!(field.max_distance, 2.0);
     }
 }

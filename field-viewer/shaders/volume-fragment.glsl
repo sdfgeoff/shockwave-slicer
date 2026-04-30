@@ -102,36 +102,29 @@ float readChannelAt(vec3 volumeCoord) {
   return readChannel(sampleAtlas(clamp(volumeCoord, vec3(0.0), vec3(0.999999))));
 }
 
-// Trilinear interpolation with occupancy-aware weighting
+float trilinearWeight(vec3 fraction, int x, int y, int z) {
+  vec3 selector = vec3(float(x), float(y), float(z));
+  vec3 axisWeight = mix(vec3(1.0) - fraction, fraction, selector);
+  return axisWeight.x * axisWeight.y * axisWeight.z;
+}
+
 float readGeneratorFieldAt(vec3 volumeCoord) {
   vec3 clampedCoord = clamp(volumeCoord, vec3(0.0), vec3(0.999999));
   vec3 voxelPosition = clampedCoord * (uVolumeSize - vec3(1.0));
   ivec3 base = ivec3(floor(voxelPosition));
   vec3 fraction = fract(voxelPosition);
   float weightedValue = 0.0;
-  float totalWeight = 0.0;
 
   for (int z = 0; z <= 1; z += 1) {
     for (int y = 0; y <= 1; y += 1) {
       for (int x = 0; x <= 1; x += 1) {
-        ivec3 offset = ivec3(x, y, z);
-        vec3 selector = vec3(float(x), float(y), float(z));
-        vec3 axisWeight = mix(vec3(1.0) - fraction, fraction, selector);
-        float weight = axisWeight.x * axisWeight.y * axisWeight.z;
-        vec4 voxel = fetchVoxel(base + offset);
-        float occupancy = step(0.5, voxel.g);
-
-        weightedValue += voxel.r * 255.0 * weight * occupancy;
-        totalWeight += weight * occupancy;
+        float weight = trilinearWeight(fraction, x, y, z);
+        weightedValue += fetchVoxel(base + ivec3(x, y, z)).r * 255.0 * weight;
       }
     }
   }
 
-  if (totalWeight <= 0.0001) {
-    return -1.0;
-  }
-
-  return weightedValue / totalWeight;
+  return weightedValue;
 }
 
 float readFieldAt(vec3 volumeCoord) {
@@ -142,17 +135,39 @@ float readFieldAt(vec3 volumeCoord) {
   return readChannelAt(volumeCoord);
 }
 
+float readGeneratorOccupancyAt(vec3 volumeCoord) {
+  vec3 clampedCoord = clamp(volumeCoord, vec3(0.0), vec3(0.999999));
+  vec3 voxelPosition = clampedCoord * (uVolumeSize - vec3(1.0));
+  ivec3 base = ivec3(floor(voxelPosition));
+  vec3 fraction = fract(voxelPosition);
+  float weightedOccupancy = 0.0;
+
+  for (int z = 0; z <= 1; z += 1) {
+    for (int y = 0; y <= 1; y += 1) {
+      for (int x = 0; x <= 1; x += 1) {
+        float weight = trilinearWeight(fraction, x, y, z);
+        weightedOccupancy += fetchVoxel(base + ivec3(x, y, z)).g * weight;
+      }
+    }
+  }
+
+  return weightedOccupancy;
+}
+
 // --- Surface predicate and normal estimation ---
 
 float surfacePredicate(vec3 volumeCoord) {
   float value = readFieldAt(volumeCoord);
-  if (value < 0.0) {
-    return 1.0;
-  }
-
   float thresholdMid = (uThreshold.x + uThreshold.y) * 0.5;
   float thresholdHalfSpan = max((uThreshold.y - uThreshold.x) * 0.5, 0.5);
-  return abs(value - thresholdMid) - thresholdHalfSpan;
+  float thresholdPredicate = abs(value - thresholdMid) - thresholdHalfSpan;
+
+  if (uDataMode == 1) {
+    float occupancyPredicate = 0.5 - readGeneratorOccupancyAt(volumeCoord);
+    return max(thresholdPredicate, occupancyPredicate);
+  }
+
+  return thresholdPredicate;
 }
 
 vec3 estimateSurfaceNormal(vec3 volumeCoord, vec3 rayDirection) {
