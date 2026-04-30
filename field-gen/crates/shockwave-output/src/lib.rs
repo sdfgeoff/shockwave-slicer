@@ -32,6 +32,9 @@ pub struct MetadataDocument<'a> {
     pub volume_path: &'a Path,
     pub image_path: &'a Path,
     pub mesh_path: Option<&'a Path>,
+    pub mesh_ply_path: Option<&'a Path>,
+    pub clipped_mesh_path: Option<&'a Path>,
+    pub clipped_mesh_ply_path: Option<&'a Path>,
     pub field: Option<&'a Field>,
     pub occupied_count: usize,
     pub voxel_count: usize,
@@ -157,6 +160,60 @@ pub fn write_obj(path: &Path, surfaces: &IsosurfaceSet) -> Result<(), String> {
     fs::write(path, text).map_err(|error| error.to_string())
 }
 
+pub fn write_ply_binary(path: &Path, surfaces: &IsosurfaceSet) -> Result<(), String> {
+    let vertex_count = surfaces.vertex_count();
+    let face_count = surfaces.triangle_count();
+    if vertex_count > u32::MAX as usize {
+        return Err("PLY export supports at most u32::MAX vertices".to_string());
+    }
+
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(
+        format!(
+            concat!(
+                "ply\n",
+                "format binary_little_endian 1.0\n",
+                "comment shockwave-layers generated isosurfaces\n",
+                "element vertex {}\n",
+                "property double x\n",
+                "property double y\n",
+                "property double z\n",
+                "element face {}\n",
+                "property list uchar uint vertex_indices\n",
+                "property uint surface_level\n",
+                "property double surface_value\n",
+                "end_header\n"
+            ),
+            vertex_count, face_count
+        )
+        .as_bytes(),
+    );
+
+    for surface in &surfaces.surfaces {
+        for vertex in &surface.mesh.vertices {
+            bytes.extend_from_slice(&vertex.x.to_le_bytes());
+            bytes.extend_from_slice(&vertex.y.to_le_bytes());
+            bytes.extend_from_slice(&vertex.z.to_le_bytes());
+        }
+    }
+
+    let mut vertex_offset = 0usize;
+    for surface in &surfaces.surfaces {
+        for triangle in &surface.mesh.triangles {
+            bytes.push(3);
+            for index in triangle {
+                let vertex_index = index + vertex_offset;
+                bytes.extend_from_slice(&(vertex_index as u32).to_le_bytes());
+            }
+            bytes.extend_from_slice(&(surface.level as u32).to_le_bytes());
+            bytes.extend_from_slice(&surface.value.to_le_bytes());
+        }
+        vertex_offset += surface.mesh.vertices.len();
+    }
+
+    fs::write(path, bytes).map_err(|error| error.to_string())
+}
+
 fn encode_field_distance(field: &Field, index: usize) -> u8 {
     let distance = field.distances[index];
     if !distance.is_finite() || field.max_distance <= 0.0 {
@@ -176,6 +233,9 @@ pub fn metadata_json(document: &MetadataDocument<'_>) -> String {
             "  \"occupancy_file\": \"{}\",\n",
             "  \"image_file\": \"{}\",\n",
             "  \"isosurface_file\": {},\n",
+            "  \"isosurface_ply_file\": {},\n",
+            "  \"clipped_isosurface_file\": {},\n",
+            "  \"clipped_isosurface_ply_file\": {},\n",
             "  \"image_format\": \"bmp-r-field-g-occupancy-slice-atlas\",\n",
             "  \"image_grid\": [{}, {}],\n",
             "  \"image_size_px\": [{}, {}],\n",
@@ -199,6 +259,9 @@ pub fn metadata_json(document: &MetadataDocument<'_>) -> String {
         json_escape(&document.volume_path.display().to_string()),
         json_escape(&document.image_path.display().to_string()),
         path_json(document.mesh_path),
+        path_json(document.mesh_ply_path),
+        path_json(document.clipped_mesh_path),
+        path_json(document.clipped_mesh_ply_path),
         document.atlas.columns,
         document.atlas.rows,
         document.atlas.width,

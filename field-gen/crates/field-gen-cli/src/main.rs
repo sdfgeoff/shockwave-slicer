@@ -5,11 +5,13 @@ use std::fs;
 use std::time::{Duration, Instant};
 
 use cli::parse_args;
+use shockwave_clip::{TriangleSolid, clip_mesh_to_solid};
 use shockwave_core::geometry::{Triangle, mesh_bounds};
 use shockwave_core::grid::{Grid, GridSpec, build_grid};
-use shockwave_iso::extract_regular_isosurfaces;
+use shockwave_iso::{Isosurface, IsosurfaceSet, extract_regular_isosurfaces};
 use shockwave_output::{
     Metadata, MetadataDocument, build_atlas, metadata_json, write_obj, write_occupancy_bmp,
+    write_ply_binary,
 };
 use shockwave_stl::parse_stl;
 use shockwave_voxel::field::{
@@ -93,6 +95,9 @@ struct OutputPaths {
     volume: std::path::PathBuf,
     image: std::path::PathBuf,
     mesh: Option<std::path::PathBuf>,
+    mesh_ply: Option<std::path::PathBuf>,
+    clipped_mesh: Option<std::path::PathBuf>,
+    clipped_mesh_ply: Option<std::path::PathBuf>,
     metadata: std::path::PathBuf,
 }
 
@@ -112,6 +117,15 @@ fn write_outputs(
     let mesh_path = field
         .as_ref()
         .map(|_| config.output_prefix.with_extension("obj"));
+    let mesh_ply_path = field
+        .as_ref()
+        .map(|_| config.output_prefix.with_extension("ply"));
+    let clipped_mesh_path = field
+        .as_ref()
+        .map(|_| suffixed_output_path(config, "clipped", "obj"));
+    let clipped_mesh_ply_path = field
+        .as_ref()
+        .map(|_| suffixed_output_path(config, "clipped", "ply"));
     let metadata_path = config.output_prefix.with_extension("json");
 
     let occ_start = Instant::now();
@@ -139,6 +153,42 @@ fn write_outputs(
         write_obj(mesh_path, &mesh)
             .map_err(|error| format!("failed to write {}: {error}", mesh_path.display()))?;
         log_timing("write obj", obj_start.elapsed());
+
+        if let Some(mesh_ply_path) = mesh_ply_path.as_ref() {
+            let ply_start = Instant::now();
+            write_ply_binary(mesh_ply_path, &mesh)
+                .map_err(|error| format!("failed to write {}: {error}", mesh_ply_path.display()))?;
+            log_timing("write ply", ply_start.elapsed());
+        }
+
+        if let (Some(clipped_mesh_path), Some(clipped_mesh_ply_path)) =
+            (clipped_mesh_path.as_ref(), clipped_mesh_ply_path.as_ref())
+        {
+            let clip_start = Instant::now();
+            let clipped_mesh = clip_isosurfaces_to_solid(&mesh, triangles);
+            log_timing("clip isosurfaces", clip_start.elapsed());
+            eprintln!(
+                "timing: clipped isosurface set produced {} surfaces, {} vertices and {} triangles",
+                clipped_mesh.surfaces.len(),
+                clipped_mesh.vertex_count(),
+                clipped_mesh.triangle_count()
+            );
+
+            let clipped_obj_start = Instant::now();
+            write_obj(clipped_mesh_path, &clipped_mesh).map_err(|error| {
+                format!("failed to write {}: {error}", clipped_mesh_path.display())
+            })?;
+            log_timing("write clipped obj", clipped_obj_start.elapsed());
+
+            let clipped_ply_start = Instant::now();
+            write_ply_binary(clipped_mesh_ply_path, &clipped_mesh).map_err(|error| {
+                format!(
+                    "failed to write {}: {error}",
+                    clipped_mesh_ply_path.display()
+                )
+            })?;
+            log_timing("write clipped ply", clipped_ply_start.elapsed());
+        }
     }
 
     let metadata_start = Instant::now();
@@ -160,6 +210,9 @@ fn write_outputs(
             volume_path: &volume_path,
             image_path: &image_path,
             mesh_path: mesh_path.as_deref(),
+            mesh_ply_path: mesh_ply_path.as_deref(),
+            clipped_mesh_path: clipped_mesh_path.as_deref(),
+            clipped_mesh_ply_path: clipped_mesh_ply_path.as_deref(),
             field: field.as_ref(),
             occupied_count,
             voxel_count: occupancy.len(),
@@ -172,8 +225,37 @@ fn write_outputs(
         volume: volume_path,
         image: image_path,
         mesh: mesh_path,
+        mesh_ply: mesh_ply_path,
+        clipped_mesh: clipped_mesh_path,
+        clipped_mesh_ply: clipped_mesh_ply_path,
         metadata: metadata_path,
     })
+}
+
+fn clip_isosurfaces_to_solid(surfaces: &IsosurfaceSet, triangles: &[Triangle]) -> IsosurfaceSet {
+    let solid = TriangleSolid::new(triangles.to_vec());
+    IsosurfaceSet {
+        surfaces: surfaces
+            .surfaces
+            .iter()
+            .map(|surface| Isosurface {
+                level: surface.level,
+                value: surface.value,
+                mesh: clip_mesh_to_solid(&surface.mesh, &solid),
+            })
+            .collect(),
+    }
+}
+
+fn suffixed_output_path(config: &cli::Config, suffix: &str, extension: &str) -> std::path::PathBuf {
+    let mut path = config.output_prefix.clone();
+    let stem = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("occupancy");
+    path.set_file_name(format!("{stem}-{suffix}"));
+    path.set_extension(extension);
+    path
 }
 
 fn print_summary(triangles: &[Triangle], occupancy: &[u8], grid: Grid, paths: &OutputPaths) {
@@ -195,6 +277,15 @@ fn print_summary(triangles: &[Triangle], occupancy: &[u8], grid: Grid, paths: &O
     println!("Wrote {}", paths.volume.display());
     println!("Wrote {}", paths.image.display());
     if let Some(mesh) = &paths.mesh {
+        println!("Wrote {}", mesh.display());
+    }
+    if let Some(mesh) = &paths.mesh_ply {
+        println!("Wrote {}", mesh.display());
+    }
+    if let Some(mesh) = &paths.clipped_mesh {
+        println!("Wrote {}", mesh.display());
+    }
+    if let Some(mesh) = &paths.clipped_mesh_ply {
         println!("Wrote {}", mesh.display());
     }
     println!("Wrote {}", paths.metadata.display());

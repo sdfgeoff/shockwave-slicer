@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
+shockwave-clip = { path = "../shockwave-clip" }
 shockwave-core = { path = "../shockwave-core" }
 shockwave-iso = { path = "../shockwave-iso" }
 shockwave-output = { path = "../shockwave-output" }
