@@ -51,23 +51,60 @@ impl Mesh {
     }
 }
 
+#[derive(Clone, Debug)]
+pub struct Isosurface {
+    pub level: usize,
+    pub value: f64,
+    pub mesh: Mesh,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct IsosurfaceSet {
+    pub surfaces: Vec<Isosurface>,
+}
+
+impl IsosurfaceSet {
+    pub fn vertex_count(&self) -> usize {
+        self.surfaces
+            .iter()
+            .map(|surface| surface.mesh.vertices.len())
+            .sum()
+    }
+
+    pub fn triangle_count(&self) -> usize {
+        self.surfaces
+            .iter()
+            .map(|surface| surface.mesh.triangles.len())
+            .sum()
+    }
+}
+
 pub fn extract_regular_isosurfaces(
     field: &Field,
     grid: Grid,
     spacing: f64,
-) -> Result<Mesh, String> {
+) -> Result<IsosurfaceSet, String> {
     if spacing <= 0.0 || !spacing.is_finite() {
         return Err("isosurface spacing must be greater than zero".to_string());
     }
     if field.distances.len() != grid.voxel_count() {
         return Err("field length does not match grid dimensions".to_string());
     }
-    if grid.dims[0] < 2 || grid.dims[1] < 2 || grid.dims[2] < 2 {
-        return Ok(Mesh::default());
+    let level_count = ((field.max_distance / spacing).ceil() as usize).saturating_sub(1);
+    let mut surfaces = IsosurfaceSet {
+        surfaces: (1..=level_count)
+            .map(|level| Isosurface {
+                level,
+                value: level as f64 * spacing,
+                mesh: Mesh::default(),
+            })
+            .collect(),
+    };
+
+    if grid.dims[0] < 2 || grid.dims[1] < 2 || grid.dims[2] < 2 || level_count == 0 {
+        return Ok(surfaces);
     }
 
-    let mut mesh = Mesh::default();
-    let level_count = ((field.max_distance / spacing).ceil() as usize).saturating_sub(1);
     let cell_dims = [grid.dims[0] - 1, grid.dims[1] - 1, grid.dims[2] - 1];
     let mut cell_vertices = HashMap::new();
 
@@ -78,10 +115,10 @@ pub fn extract_regular_isosurfaces(
         level_count,
         cell_dims,
         &mut cell_vertices,
-        &mut mesh,
+        &mut surfaces,
     );
 
-    Ok(mesh)
+    Ok(surfaces)
 }
 
 pub fn extract_isosurface(field: &Field, grid: Grid, iso_value: f64) -> Result<Mesh, String> {
@@ -224,7 +261,7 @@ fn emit_regular_surface_quads(
     level_count: usize,
     cell_dims: [usize; 3],
     cell_vertices: &mut HashMap<(usize, usize), usize>,
-    mesh: &mut Mesh,
+    surfaces: &mut IsosurfaceSet,
 ) {
     for z in 1..grid.dims[2] - 1 {
         for y in 1..grid.dims[1] - 1 {
@@ -240,7 +277,7 @@ fn emit_regular_surface_quads(
                         level,
                         cell_dims,
                         cell_vertices,
-                        mesh,
+                        surfaces,
                         cells,
                         edge_is_ascending(field, grid, [x, y, z], [x + 1, y, z]),
                     );
@@ -263,7 +300,7 @@ fn emit_regular_surface_quads(
                         level,
                         cell_dims,
                         cell_vertices,
-                        mesh,
+                        surfaces,
                         cells,
                         !edge_is_ascending(field, grid, [x, y, z], [x, y + 1, z]),
                     );
@@ -286,7 +323,7 @@ fn emit_regular_surface_quads(
                         level,
                         cell_dims,
                         cell_vertices,
-                        mesh,
+                        surfaces,
                         cells,
                         edge_is_ascending(field, grid, [x, y, z], [x, y, z + 1]),
                     );
@@ -304,7 +341,7 @@ fn emit_regular_quad(
     level: usize,
     cell_dims: [usize; 3],
     cell_vertices: &mut HashMap<(usize, usize), usize>,
-    mesh: &mut Mesh,
+    surfaces: &mut IsosurfaceSet,
     cells: [[usize; 3]; 4],
     reverse: bool,
 ) {
@@ -315,7 +352,7 @@ fn emit_regular_quad(
         level,
         cell_dims,
         cell_vertices,
-        mesh,
+        surfaces,
         cells[0],
     ) else {
         return;
@@ -327,7 +364,7 @@ fn emit_regular_quad(
         level,
         cell_dims,
         cell_vertices,
-        mesh,
+        surfaces,
         cells[1],
     ) else {
         return;
@@ -339,7 +376,7 @@ fn emit_regular_quad(
         level,
         cell_dims,
         cell_vertices,
-        mesh,
+        surfaces,
         cells[2],
     ) else {
         return;
@@ -351,12 +388,13 @@ fn emit_regular_quad(
         level,
         cell_dims,
         cell_vertices,
-        mesh,
+        surfaces,
         cells[3],
     ) else {
         return;
     };
 
+    let mesh = &mut surfaces.surfaces[level - 1].mesh;
     if reverse {
         mesh.triangles.push([a, c, b]);
         mesh.triangles.push([a, d, c]);
@@ -374,7 +412,7 @@ fn regular_cell_vertex(
     level: usize,
     cell_dims: [usize; 3],
     cell_vertices: &mut HashMap<(usize, usize), usize>,
-    mesh: &mut Mesh,
+    surfaces: &mut IsosurfaceSet,
     cell: [usize; 3],
 ) -> Option<usize> {
     let cell_index = cell_index(cell_dims, cell[0], cell[1], cell[2]);
@@ -391,6 +429,7 @@ fn regular_cell_vertex(
         cell[2],
         level as f64 * spacing,
     )?;
+    let mesh = &mut surfaces.surfaces[level - 1].mesh;
     let vertex_index = mesh.vertices.len();
     mesh.vertices.push(vertex);
     cell_vertices.insert(key, vertex_index);

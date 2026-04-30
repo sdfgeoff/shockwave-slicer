@@ -3,7 +3,7 @@ use std::path::PathBuf;
 
 use shockwave_core::geometry::{Bounds, Vec3};
 use shockwave_core::grid::Grid;
-use shockwave_iso::Mesh;
+use shockwave_iso::IsosurfaceSet;
 use shockwave_voxel::field::Field;
 
 #[derive(Clone, Copy, Debug)]
@@ -111,24 +111,34 @@ pub fn write_occupancy_bmp(
     fs::write(path, bytes).map_err(|error| error.to_string())
 }
 
-pub fn write_obj(path: &PathBuf, mesh: &Mesh) -> Result<(), String> {
+pub fn write_obj(path: &PathBuf, surfaces: &IsosurfaceSet) -> Result<(), String> {
     let mut text = String::new();
     text.push_str("# shockwave-layers generated isosurfaces\n");
+    let mut vertex_offset = 0usize;
 
-    for vertex in &mesh.vertices {
+    for surface in &surfaces.surfaces {
         text.push_str(&format!(
-            "v {:.9} {:.9} {:.9}\n",
-            vertex.x, vertex.y, vertex.z
+            "o isosurface_{:04}_value_{:.9}\n",
+            surface.level, surface.value
         ));
-    }
 
-    for triangle in &mesh.triangles {
-        text.push_str(&format!(
-            "f {} {} {}\n",
-            triangle[0] + 1,
-            triangle[1] + 1,
-            triangle[2] + 1
-        ));
+        for vertex in &surface.mesh.vertices {
+            text.push_str(&format!(
+                "v {:.9} {:.9} {:.9}\n",
+                vertex.x, vertex.y, vertex.z
+            ));
+        }
+
+        for triangle in &surface.mesh.triangles {
+            text.push_str(&format!(
+                "f {} {} {}\n",
+                triangle[0] + vertex_offset + 1,
+                triangle[1] + vertex_offset + 1,
+                triangle[2] + vertex_offset + 1
+            ));
+        }
+
+        vertex_offset += surface.mesh.vertices.len();
     }
 
     fs::write(path, text).map_err(|error| error.to_string())

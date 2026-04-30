@@ -127,9 +127,10 @@ fn write_outputs(
         let mesh = extract_regular_isosurfaces(field, grid, config.iso_spacing)?;
         log_timing("extract isosurfaces", extract_start.elapsed());
         eprintln!(
-            "timing: isosurface mesh produced {} vertices and {} triangles",
-            mesh.vertices.len(),
-            mesh.triangles.len()
+            "timing: isosurface set produced {} surfaces, {} vertices and {} triangles",
+            mesh.surfaces.len(),
+            mesh.vertex_count(),
+            mesh.triangle_count()
         );
 
         let obj_start = Instant::now();
