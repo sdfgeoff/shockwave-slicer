@@ -142,22 +142,32 @@ float readFieldAt(vec3 volumeCoord) {
   return readChannelAt(volumeCoord);
 }
 
-// --- Normal estimation ---
+// --- Surface predicate and normal estimation ---
 
-vec3 estimateNormal(vec3 volumeCoord) {
+float surfacePredicate(vec3 volumeCoord) {
+  float value = readFieldAt(volumeCoord);
+  if (value < 0.0) {
+    return 1.0;
+  }
+
+  float thresholdMid = (uThreshold.x + uThreshold.y) * 0.5;
+  float thresholdHalfSpan = max((uThreshold.y - uThreshold.x) * 0.5, 0.5);
+  return abs(value - thresholdMid) - thresholdHalfSpan;
+}
+
+vec3 estimateSurfaceNormal(vec3 volumeCoord, vec3 rayDirection) {
   vec3 texel = vec3(
     1.0 / max(uVolumeSize.x, 1.0),
     1.0 / max(uVolumeSize.y, 1.0),
     1.0 / max(uVolumeSize.z, 1.0)
   );
 
-  float center = max(readFieldAt(volumeCoord), 0.0);
-  float sampleXp = max(readFieldAt(volumeCoord + vec3(texel.x, 0.0, 0.0)), center);
-  float sampleXm = max(readFieldAt(volumeCoord - vec3(texel.x, 0.0, 0.0)), center);
-  float sampleYp = max(readFieldAt(volumeCoord + vec3(0.0, texel.y, 0.0)), center);
-  float sampleYm = max(readFieldAt(volumeCoord - vec3(0.0, texel.y, 0.0)), center);
-  float sampleZp = max(readFieldAt(volumeCoord + vec3(0.0, 0.0, texel.z)), center);
-  float sampleZm = max(readFieldAt(volumeCoord - vec3(0.0, 0.0, texel.z)), center);
+  float sampleXp = surfacePredicate(volumeCoord + vec3(texel.x, 0.0, 0.0));
+  float sampleXm = surfacePredicate(volumeCoord - vec3(texel.x, 0.0, 0.0));
+  float sampleYp = surfacePredicate(volumeCoord + vec3(0.0, texel.y, 0.0));
+  float sampleYm = surfacePredicate(volumeCoord - vec3(0.0, texel.y, 0.0));
+  float sampleZp = surfacePredicate(volumeCoord + vec3(0.0, 0.0, texel.z));
+  float sampleZm = surfacePredicate(volumeCoord - vec3(0.0, 0.0, texel.z));
 
   vec3 gradient = vec3(sampleXp - sampleXm, sampleYp - sampleYm, sampleZp - sampleZm);
   float gradientLength = length(gradient);
@@ -165,7 +175,11 @@ vec3 estimateNormal(vec3 volumeCoord) {
     return vec3(0.0, 0.0, 1.0);
   }
 
-  return normalize(-gradient);
+  vec3 normal = normalize(gradient);
+  if (dot(normal, rayDirection) > 0.0) {
+    normal = -normal;
+  }
+  return normal;
 }
 
 // --- Main: ray-march through the volume ---
@@ -192,10 +206,6 @@ void main() {
   float totalDistance = tFar - startT;
   float dt = totalDistance / uStepCount;
   vec3 baseColor = uDataMode == 1 ? vec3(0.48, 0.82, 1.0) : channelColor(uChannel);
-  float thresholdMid = (uThreshold.x + uThreshold.y) * 0.5;
-  float thresholdHalfSpan = max((uThreshold.y - uThreshold.x) * 0.5, 0.5);
-  float previousSignedDistance = 0.0;
-  bool hasPreviousSample = false;
   bool hitSurface = false;
   vec3 shadedColor = background;
 
@@ -207,42 +217,28 @@ void main() {
     float t = startT + dt * i;
     vec3 position = origin + direction * t;
     vec3 volumeCoord = position * 0.5 + 0.5;
-    float value = readFieldAt(volumeCoord);
-    if (value < 0.0) {
-      previousSignedDistance = 1.0;
-      hasPreviousSample = true;
-      continue;
-    }
-    float signedDistance = abs(value - thresholdMid) - thresholdHalfSpan;
+    float signedDistance = surfacePredicate(volumeCoord);
 
     if (signedDistance <= 0.0) {
       float refinedNear = max(startT, t - dt);
       float refinedFar = t;
-      float nearSignedDistance = hasPreviousSample ? previousSignedDistance : signedDistance;
 
       // Binary search refinement (5 steps)
       for (int refineStep = 0; refineStep < 5; refineStep += 1) {
         float midpoint = (refinedNear + refinedFar) * 0.5;
         vec3 midpointPosition = origin + direction * midpoint;
         vec3 midpointCoord = midpointPosition * 0.5 + 0.5;
-        float midpointValue = readFieldAt(midpointCoord);
-        if (midpointValue < 0.0) {
-          refinedNear = midpoint;
-          nearSignedDistance = 1.0;
-          continue;
-        }
-        float midpointSignedDistance = abs(midpointValue - thresholdMid) - thresholdHalfSpan;
+        float midpointSignedDistance = surfacePredicate(midpointCoord);
         if (midpointSignedDistance <= 0.0) {
           refinedFar = midpoint;
         } else {
           refinedNear = midpoint;
-          nearSignedDistance = midpointSignedDistance;
         }
       }
 
       vec3 hitPosition = origin + direction * refinedFar;
       vec3 hitCoord = hitPosition * 0.5 + 0.5;
-      vec3 normal = estimateNormal(hitCoord);
+      vec3 normal = estimateSurfaceNormal(hitCoord, direction);
       vec3 lightDirection = normalize(vec3(-0.45, 0.7, 0.55));
       vec3 viewDirection = normalize(origin - hitPosition);
       vec3 halfVector = normalize(lightDirection + viewDirection);
@@ -256,9 +252,6 @@ void main() {
       hitSurface = true;
       break;
     }
-
-    previousSignedDistance = signedDistance;
-    hasPreviousSample = true;
   }
 
   if (hitSurface) {
