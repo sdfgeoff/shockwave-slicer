@@ -38,6 +38,7 @@ const hoveredValueLabel = document.getElementById("hoveredValueLabel");
 
 const atlasView = new AtlasView(atlasCanvas, viewport);
 const volumeView = new VolumeView(volumeCanvas, viewport);
+await volumeView.init();
 
 let renderQueued = false;
 

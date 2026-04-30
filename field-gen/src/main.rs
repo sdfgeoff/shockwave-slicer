@@ -26,17 +26,30 @@ fn main() {
 
 fn run() -> Result<(), String> {
     let config = parse_args(env::args().skip(1).collect())?;
+    let triangles = load_mesh(&config)?;
+    let (grid, occupancy, field) = voxelize(&config, &triangles)?;
+    let paths = write_outputs(&config, &triangles, &occupancy, &field, grid)?;
+    print_summary(&triangles, &occupancy, grid, &paths);
+    Ok(())
+}
+
+fn load_mesh(config: &cli::Config) -> Result<Vec<geometry::Triangle>, String> {
     let bytes = fs::read(&config.input)
         .map_err(|error| format!("failed to read {}: {error}", config.input.display()))?;
     let triangles = parse_stl(&bytes)?;
-
     if triangles.is_empty() {
         return Err("STL did not contain any triangles".to_string());
     }
+    Ok(triangles)
+}
 
-    let bounds = mesh_bounds(&triangles);
-    let grid = build_grid(&config, bounds)?;
-    let occupancy = generate_occupancy(&triangles, grid);
+fn voxelize(
+    config: &cli::Config,
+    triangles: &[geometry::Triangle],
+) -> Result<(grid::Grid, Vec<u8>, Option<field::Field>), String> {
+    let bounds = mesh_bounds(triangles);
+    let grid = build_grid(config, bounds)?;
+    let occupancy = generate_occupancy(triangles, grid);
     let field = if config.field_enabled {
         Some(propagate_field(
             &occupancy,
@@ -46,20 +59,38 @@ fn run() -> Result<(), String> {
     } else {
         None
     };
+    Ok((grid, occupancy, field))
+}
+
+struct OutputPaths {
+    volume: std::path::PathBuf,
+    image: std::path::PathBuf,
+    metadata: std::path::PathBuf,
+}
+
+fn write_outputs(
+    config: &cli::Config,
+    triangles: &[geometry::Triangle],
+    occupancy: &[u8],
+    field: &Option<field::Field>,
+    grid: grid::Grid,
+) -> Result<OutputPaths, String> {
+    let bounds = mesh_bounds(triangles);
     let atlas = build_atlas(grid);
     let occupied_count = occupancy.iter().filter(|value| **value != 0).count();
 
     let volume_path = config.output_prefix.with_extension("occ");
     let image_path = config.output_prefix.with_extension("bmp");
     let metadata_path = config.output_prefix.with_extension("json");
-    fs::write(&volume_path, &occupancy)
+
+    fs::write(&volume_path, occupancy)
         .map_err(|error| format!("failed to write {}: {error}", volume_path.display()))?;
-    write_occupancy_bmp(&image_path, &occupancy, field.as_ref(), grid, atlas)
+    write_occupancy_bmp(&image_path, occupancy, field.as_ref(), grid, atlas)
         .map_err(|error| format!("failed to write {}: {error}", image_path.display()))?;
     fs::write(
         &metadata_path,
         metadata_json(
-            &config,
+            config,
             bounds,
             grid,
             atlas,
@@ -72,6 +103,20 @@ fn run() -> Result<(), String> {
     )
     .map_err(|error| format!("failed to write {}: {error}", metadata_path.display()))?;
 
+    Ok(OutputPaths {
+        volume: volume_path,
+        image: image_path,
+        metadata: metadata_path,
+    })
+}
+
+fn print_summary(
+    triangles: &[geometry::Triangle],
+    occupancy: &[u8],
+    grid: grid::Grid,
+    paths: &OutputPaths,
+) {
+    let occupied_count = occupancy.iter().filter(|value| **value != 0).count();
     println!("Loaded {} triangles", triangles.len());
     println!(
         "Grid: {} x {} x {} voxels",
@@ -86,9 +131,7 @@ fn run() -> Result<(), String> {
         grid.actual_size.x, grid.actual_size.y, grid.actual_size.z
     );
     println!("Occupied: {occupied_count} / {}", occupancy.len());
-    println!("Wrote {}", volume_path.display());
-    println!("Wrote {}", image_path.display());
-    println!("Wrote {}", metadata_path.display());
-
-    Ok(())
+    println!("Wrote {}", paths.volume.display());
+    println!("Wrote {}", paths.image.display());
+    println!("Wrote {}", paths.metadata.display());
 }
