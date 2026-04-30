@@ -4,6 +4,8 @@
 //! Actual triangle splitting is intentionally kept separate so callers do not
 //! mistake "classified" triangles for a fully clipped layer mesh.
 
+use std::collections::HashMap;
+
 mod aabb;
 mod classify;
 mod intersect;
@@ -17,6 +19,7 @@ pub use classify::{PointClassification, TriangleSolid};
 pub use intersect::{TriangleIntersection, triangles_intersect};
 
 const EPSILON: f64 = 1.0e-9;
+const VERTEX_MERGE_SCALE: f64 = 1.0e9;
 
 #[derive(Clone, Debug)]
 pub struct MeshTriangleClassification {
@@ -33,13 +36,14 @@ pub enum ClippingState {
 
 pub fn clip_mesh_to_solid(mesh: &Mesh, solid: &TriangleSolid) -> Mesh {
     let mut clipped = Mesh::default();
+    let mut vertices = VertexMap::default();
 
     for indices in &mesh.triangles {
         let triangle = Triangle {
             vertices: mesh.triangle_vertices(*indices),
         };
         for fragment in clip_triangle_to_solid(&triangle, solid) {
-            push_triangle(&mut clipped, fragment);
+            push_triangle(&mut clipped, &mut vertices, fragment);
         }
     }
 
@@ -222,10 +226,55 @@ fn triangulate_polygon(polygon: &[Vec3]) -> Vec<[Vec3; 3]> {
         .collect()
 }
 
-fn push_triangle(mesh: &mut Mesh, triangle: [Vec3; 3]) {
-    let base = mesh.vertices.len();
-    mesh.vertices.extend_from_slice(&triangle);
-    mesh.triangles.push([base, base + 1, base + 2]);
+#[derive(Default)]
+struct VertexMap {
+    indices: HashMap<VertexKey, usize>,
+}
+
+impl VertexMap {
+    fn insert(&mut self, mesh: &mut Mesh, vertex: Vec3) -> usize {
+        let key = VertexKey::from_vec3(vertex);
+        if let Some(index) = self.indices.get(&key) {
+            return *index;
+        }
+
+        let index = mesh.vertices.len();
+        mesh.vertices.push(vertex);
+        self.indices.insert(key, index);
+        index
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+struct VertexKey {
+    x: i64,
+    y: i64,
+    z: i64,
+}
+
+impl VertexKey {
+    fn from_vec3(vertex: Vec3) -> Self {
+        Self {
+            x: quantize_coordinate(vertex.x),
+            y: quantize_coordinate(vertex.y),
+            z: quantize_coordinate(vertex.z),
+        }
+    }
+}
+
+fn quantize_coordinate(value: f64) -> i64 {
+    (value * VERTEX_MERGE_SCALE).round() as i64
+}
+
+fn push_triangle(mesh: &mut Mesh, vertices: &mut VertexMap, triangle: [Vec3; 3]) {
+    let indices = [
+        vertices.insert(mesh, triangle[0]),
+        vertices.insert(mesh, triangle[1]),
+        vertices.insert(mesh, triangle[2]),
+    ];
+    if indices[0] != indices[1] && indices[1] != indices[2] && indices[2] != indices[0] {
+        mesh.triangles.push(indices);
+    }
 }
 
 fn triangle_centroid(triangle: &Triangle) -> Vec3 {
@@ -385,5 +434,61 @@ mod tests {
             let centroid = triangle_vertices_centroid(&vertices);
             assert_ne!(solid.classify_point(centroid), PointClassification::Outside);
         }
+    }
+
+    #[test]
+    fn clipped_mesh_reuses_shared_vertices() {
+        let solid = TriangleSolid::new(vec![
+            Triangle {
+                vertices: [v(0.0, 0.0, 0.0), v(2.0, 0.0, 0.0), v(0.0, 2.0, 0.0)],
+            },
+            Triangle {
+                vertices: [v(2.0, 0.0, 0.0), v(2.0, 2.0, 0.0), v(0.0, 2.0, 0.0)],
+            },
+            Triangle {
+                vertices: [v(0.0, 0.0, 1.0), v(0.0, 2.0, 1.0), v(2.0, 0.0, 1.0)],
+            },
+            Triangle {
+                vertices: [v(2.0, 0.0, 1.0), v(0.0, 2.0, 1.0), v(2.0, 2.0, 1.0)],
+            },
+            Triangle {
+                vertices: [v(0.0, 0.0, 0.0), v(0.0, 0.0, 1.0), v(2.0, 0.0, 0.0)],
+            },
+            Triangle {
+                vertices: [v(2.0, 0.0, 0.0), v(0.0, 0.0, 1.0), v(2.0, 0.0, 1.0)],
+            },
+            Triangle {
+                vertices: [v(0.0, 2.0, 0.0), v(2.0, 2.0, 0.0), v(0.0, 2.0, 1.0)],
+            },
+            Triangle {
+                vertices: [v(2.0, 2.0, 0.0), v(2.0, 2.0, 1.0), v(0.0, 2.0, 1.0)],
+            },
+            Triangle {
+                vertices: [v(0.0, 0.0, 0.0), v(0.0, 2.0, 0.0), v(0.0, 0.0, 1.0)],
+            },
+            Triangle {
+                vertices: [v(0.0, 2.0, 0.0), v(0.0, 2.0, 1.0), v(0.0, 0.0, 1.0)],
+            },
+            Triangle {
+                vertices: [v(2.0, 0.0, 0.0), v(2.0, 0.0, 1.0), v(2.0, 2.0, 0.0)],
+            },
+            Triangle {
+                vertices: [v(2.0, 2.0, 0.0), v(2.0, 0.0, 1.0), v(2.0, 2.0, 1.0)],
+            },
+        ]);
+        let mesh = Mesh {
+            vertices: vec![
+                v(0.25, 0.25, 0.5),
+                v(1.75, 0.25, 0.5),
+                v(1.75, 1.75, 0.5),
+                v(0.25, 1.75, 0.5),
+            ],
+            triangles: vec![[0, 1, 2], [0, 2, 3]],
+        };
+
+        let clipped = clip_mesh_to_solid(&mesh, &solid);
+
+        assert_eq!(clipped.triangles.len(), 2);
+        assert_eq!(clipped.vertices.len(), 4);
     }
 }
