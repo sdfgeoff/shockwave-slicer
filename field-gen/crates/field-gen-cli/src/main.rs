@@ -2,6 +2,7 @@ mod cli;
 
 use std::env;
 use std::fs;
+use std::time::{Duration, Instant};
 
 use cli::parse_args;
 use shockwave_core::geometry::{Triangle, mesh_bounds};
@@ -24,18 +25,25 @@ fn main() {
 }
 
 fn run() -> Result<(), String> {
+    let total_start = Instant::now();
     let config = parse_args(env::args().skip(1).collect())?;
     let triangles = load_mesh(&config)?;
     let (grid, occupancy, field) = voxelize(&config, &triangles)?;
     let paths = write_outputs(&config, &triangles, &occupancy, &field, grid)?;
     print_summary(&triangles, &occupancy, grid, &paths);
+    log_timing("total", total_start.elapsed());
     Ok(())
 }
 
 fn load_mesh(config: &cli::Config) -> Result<Vec<Triangle>, String> {
+    let read_start = Instant::now();
     let bytes = fs::read(&config.input)
         .map_err(|error| format!("failed to read {}: {error}", config.input.display()))?;
+    log_timing("read stl", read_start.elapsed());
+
+    let parse_start = Instant::now();
     let triangles = parse_stl(&bytes)?;
+    log_timing("parse stl", parse_start.elapsed());
     if triangles.is_empty() {
         return Err("STL did not contain any triangles".to_string());
     }
@@ -47,6 +55,7 @@ fn voxelize(
     triangles: &[Triangle],
 ) -> Result<(Grid, Vec<u8>, Option<Field>), String> {
     let bounds = mesh_bounds(triangles);
+    let grid_start = Instant::now();
     let grid = build_grid(
         GridSpec {
             voxel_size: config.voxel_size,
@@ -56,11 +65,21 @@ fn voxelize(
         },
         bounds,
     )?;
+    log_timing("build grid", grid_start.elapsed());
+
+    let occupancy_start = Instant::now();
     let occupancy = generate_occupancy(triangles, grid);
+    log_timing("generate occupancy", occupancy_start.elapsed());
+
     let field = if config.field_enabled {
         let propagation = AnisotropicEuclideanPropagation::new(config.field_rate);
+        let propagation_start = Instant::now();
         let mut field = propagate_field(&occupancy, grid, &propagation)?;
+        log_timing("propagate field", propagation_start.elapsed());
+
+        let expansion_start = Instant::now();
         expand_field(&mut field, grid, FIELD_EXTENSION_VOXELS, &propagation);
+        log_timing("expand field", expansion_start.elapsed());
         Some(field)
     } else {
         None
@@ -93,17 +112,33 @@ fn write_outputs(
         .map(|_| config.output_prefix.with_extension("obj"));
     let metadata_path = config.output_prefix.with_extension("json");
 
+    let occ_start = Instant::now();
     fs::write(&volume_path, occupancy)
         .map_err(|error| format!("failed to write {}: {error}", volume_path.display()))?;
+    log_timing("write occ", occ_start.elapsed());
+
+    let bmp_start = Instant::now();
     write_occupancy_bmp(&image_path, occupancy, field.as_ref(), grid, atlas)
         .map_err(|error| format!("failed to write {}: {error}", image_path.display()))?;
+    log_timing("write bmp", bmp_start.elapsed());
 
     if let (Some(field), Some(mesh_path)) = (field.as_ref(), mesh_path.as_ref()) {
+        let extract_start = Instant::now();
         let mesh = extract_regular_isosurfaces(field, grid, config.iso_spacing)?;
+        log_timing("extract isosurfaces", extract_start.elapsed());
+        eprintln!(
+            "timing: isosurface mesh produced {} vertices and {} triangles",
+            mesh.vertices.len(),
+            mesh.triangles.len()
+        );
+
+        let obj_start = Instant::now();
         write_obj(mesh_path, &mesh)
             .map_err(|error| format!("failed to write {}: {error}", mesh_path.display()))?;
+        log_timing("write obj", obj_start.elapsed());
     }
 
+    let metadata_start = Instant::now();
     fs::write(
         &metadata_path,
         metadata_json(
@@ -128,6 +163,7 @@ fn write_outputs(
         ),
     )
     .map_err(|error| format!("failed to write {}: {error}", metadata_path.display()))?;
+    log_timing("write metadata", metadata_start.elapsed());
 
     Ok(OutputPaths {
         volume: volume_path,
@@ -159,4 +195,8 @@ fn print_summary(triangles: &[Triangle], occupancy: &[u8], grid: Grid, paths: &O
         println!("Wrote {}", mesh.display());
     }
     println!("Wrote {}", paths.metadata.display());
+}
+
+fn log_timing(label: &str, duration: Duration) {
+    eprintln!("timing: {label}: {:.3}s", duration.as_secs_f64());
 }
