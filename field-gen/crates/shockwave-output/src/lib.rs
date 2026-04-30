@@ -32,9 +32,7 @@ pub struct MetadataDocument<'a> {
     pub volume_path: &'a Path,
     pub image_path: &'a Path,
     pub mesh_path: Option<&'a Path>,
-    pub mesh_ply_path: Option<&'a Path>,
     pub clipped_mesh_path: Option<&'a Path>,
-    pub clipped_mesh_ply_path: Option<&'a Path>,
     pub field: Option<&'a Field>,
     pub occupied_count: usize,
     pub voxel_count: usize,
@@ -127,39 +125,6 @@ pub fn write_occupancy_bmp(
     fs::write(path, bytes).map_err(|error| error.to_string())
 }
 
-pub fn write_obj(path: &Path, surfaces: &IsosurfaceSet) -> Result<(), String> {
-    let mut text = String::new();
-    text.push_str("# shockwave-layers generated isosurfaces\n");
-    let mut vertex_offset = 0usize;
-
-    for surface in &surfaces.surfaces {
-        text.push_str(&format!(
-            "o isosurface_{:04}_value_{:.9}\n",
-            surface.level, surface.value
-        ));
-
-        for vertex in &surface.mesh.vertices {
-            text.push_str(&format!(
-                "v {:.9} {:.9} {:.9}\n",
-                vertex.x, vertex.y, vertex.z
-            ));
-        }
-
-        for triangle in &surface.mesh.triangles {
-            text.push_str(&format!(
-                "f {} {} {}\n",
-                triangle[0] + vertex_offset + 1,
-                triangle[1] + vertex_offset + 1,
-                triangle[2] + vertex_offset + 1
-            ));
-        }
-
-        vertex_offset += surface.mesh.vertices.len();
-    }
-
-    fs::write(path, text).map_err(|error| error.to_string())
-}
-
 pub fn write_ply_binary(path: &Path, surfaces: &IsosurfaceSet) -> Result<(), String> {
     let vertex_count = surfaces.vertex_count();
     let face_count = surfaces.triangle_count();
@@ -233,9 +198,8 @@ pub fn metadata_json(document: &MetadataDocument<'_>) -> String {
             "  \"occupancy_file\": \"{}\",\n",
             "  \"image_file\": \"{}\",\n",
             "  \"isosurface_file\": {},\n",
-            "  \"isosurface_ply_file\": {},\n",
             "  \"clipped_isosurface_file\": {},\n",
-            "  \"clipped_isosurface_ply_file\": {},\n",
+            "  \"mesh_format\": \"binary_little_endian_ply\",\n",
             "  \"image_format\": \"bmp-r-field-g-occupancy-slice-atlas\",\n",
             "  \"image_grid\": [{}, {}],\n",
             "  \"image_size_px\": [{}, {}],\n",
@@ -259,9 +223,7 @@ pub fn metadata_json(document: &MetadataDocument<'_>) -> String {
         json_escape(&document.volume_path.display().to_string()),
         json_escape(&document.image_path.display().to_string()),
         path_json(document.mesh_path),
-        path_json(document.mesh_ply_path),
         path_json(document.clipped_mesh_path),
-        path_json(document.clipped_mesh_ply_path),
         document.atlas.columns,
         document.atlas.rows,
         document.atlas.width,
