@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use shockwave_core::geometry::Vec3;
 use shockwave_core::grid::Grid;
 use shockwave_voxel::field::Field;
@@ -60,13 +62,24 @@ pub fn extract_regular_isosurfaces(
     if field.distances.len() != grid.voxel_count() {
         return Err("field length does not match grid dimensions".to_string());
     }
+    if grid.dims[0] < 2 || grid.dims[1] < 2 || grid.dims[2] < 2 {
+        return Ok(Mesh::default());
+    }
 
     let mut mesh = Mesh::default();
-    let mut iso_value = spacing;
-    while iso_value < field.max_distance {
-        mesh.append(extract_isosurface(field, grid, iso_value)?);
-        iso_value += spacing;
-    }
+    let level_count = ((field.max_distance / spacing).ceil() as usize).saturating_sub(1);
+    let cell_dims = [grid.dims[0] - 1, grid.dims[1] - 1, grid.dims[2] - 1];
+    let mut cell_vertices = HashMap::new();
+
+    emit_regular_surface_quads(
+        field,
+        grid,
+        spacing,
+        level_count,
+        cell_dims,
+        &mut cell_vertices,
+        &mut mesh,
+    );
 
     Ok(mesh)
 }
@@ -202,6 +215,208 @@ fn emit_surface_quads(
             }
         }
     }
+}
+
+fn emit_regular_surface_quads(
+    field: &Field,
+    grid: Grid,
+    spacing: f64,
+    level_count: usize,
+    cell_dims: [usize; 3],
+    cell_vertices: &mut HashMap<(usize, usize), usize>,
+    mesh: &mut Mesh,
+) {
+    for z in 1..grid.dims[2] - 1 {
+        for y in 1..grid.dims[1] - 1 {
+            for x in 0..grid.dims[0] - 1 {
+                for level in
+                    crossing_levels(field, grid, [x, y, z], [x + 1, y, z], spacing, level_count)
+                {
+                    let cells = [[x, y - 1, z - 1], [x, y, z - 1], [x, y, z], [x, y - 1, z]];
+                    emit_regular_quad(
+                        field,
+                        grid,
+                        spacing,
+                        level,
+                        cell_dims,
+                        cell_vertices,
+                        mesh,
+                        cells,
+                        edge_is_ascending(field, grid, [x, y, z], [x + 1, y, z]),
+                    );
+                }
+            }
+        }
+    }
+
+    for z in 1..grid.dims[2] - 1 {
+        for y in 0..grid.dims[1] - 1 {
+            for x in 1..grid.dims[0] - 1 {
+                for level in
+                    crossing_levels(field, grid, [x, y, z], [x, y + 1, z], spacing, level_count)
+                {
+                    let cells = [[x - 1, y, z - 1], [x, y, z - 1], [x, y, z], [x - 1, y, z]];
+                    emit_regular_quad(
+                        field,
+                        grid,
+                        spacing,
+                        level,
+                        cell_dims,
+                        cell_vertices,
+                        mesh,
+                        cells,
+                        !edge_is_ascending(field, grid, [x, y, z], [x, y + 1, z]),
+                    );
+                }
+            }
+        }
+    }
+
+    for z in 0..grid.dims[2] - 1 {
+        for y in 1..grid.dims[1] - 1 {
+            for x in 1..grid.dims[0] - 1 {
+                for level in
+                    crossing_levels(field, grid, [x, y, z], [x, y, z + 1], spacing, level_count)
+                {
+                    let cells = [[x - 1, y - 1, z], [x, y - 1, z], [x, y, z], [x - 1, y, z]];
+                    emit_regular_quad(
+                        field,
+                        grid,
+                        spacing,
+                        level,
+                        cell_dims,
+                        cell_vertices,
+                        mesh,
+                        cells,
+                        edge_is_ascending(field, grid, [x, y, z], [x, y, z + 1]),
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn emit_regular_quad(
+    field: &Field,
+    grid: Grid,
+    spacing: f64,
+    level: usize,
+    cell_dims: [usize; 3],
+    cell_vertices: &mut HashMap<(usize, usize), usize>,
+    mesh: &mut Mesh,
+    cells: [[usize; 3]; 4],
+    reverse: bool,
+) {
+    let Some(a) = regular_cell_vertex(
+        field,
+        grid,
+        spacing,
+        level,
+        cell_dims,
+        cell_vertices,
+        mesh,
+        cells[0],
+    ) else {
+        return;
+    };
+    let Some(b) = regular_cell_vertex(
+        field,
+        grid,
+        spacing,
+        level,
+        cell_dims,
+        cell_vertices,
+        mesh,
+        cells[1],
+    ) else {
+        return;
+    };
+    let Some(c) = regular_cell_vertex(
+        field,
+        grid,
+        spacing,
+        level,
+        cell_dims,
+        cell_vertices,
+        mesh,
+        cells[2],
+    ) else {
+        return;
+    };
+    let Some(d) = regular_cell_vertex(
+        field,
+        grid,
+        spacing,
+        level,
+        cell_dims,
+        cell_vertices,
+        mesh,
+        cells[3],
+    ) else {
+        return;
+    };
+
+    if reverse {
+        mesh.triangles.push([a, c, b]);
+        mesh.triangles.push([a, d, c]);
+    } else {
+        mesh.triangles.push([a, b, c]);
+        mesh.triangles.push([a, c, d]);
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn regular_cell_vertex(
+    field: &Field,
+    grid: Grid,
+    spacing: f64,
+    level: usize,
+    cell_dims: [usize; 3],
+    cell_vertices: &mut HashMap<(usize, usize), usize>,
+    mesh: &mut Mesh,
+    cell: [usize; 3],
+) -> Option<usize> {
+    let cell_index = cell_index(cell_dims, cell[0], cell[1], cell[2]);
+    let key = (level, cell_index);
+    if let Some(vertex_index) = cell_vertices.get(&key) {
+        return Some(*vertex_index);
+    }
+
+    let vertex = cell_vertex(
+        field,
+        grid,
+        cell[0],
+        cell[1],
+        cell[2],
+        level as f64 * spacing,
+    )?;
+    let vertex_index = mesh.vertices.len();
+    mesh.vertices.push(vertex);
+    cell_vertices.insert(key, vertex_index);
+    Some(vertex_index)
+}
+
+fn crossing_levels(
+    field: &Field,
+    grid: Grid,
+    a: [usize; 3],
+    b: [usize; 3],
+    spacing: f64,
+    level_count: usize,
+) -> std::ops::RangeInclusive<usize> {
+    let value_a = field.distances[grid.index(a[0], a[1], a[2])];
+    let value_b = field.distances[grid.index(b[0], b[1], b[2])];
+    if !value_a.is_finite() || !value_b.is_finite() || value_a == value_b || level_count == 0 {
+        return 1..=0;
+    }
+
+    let min_value = value_a.min(value_b);
+    let max_value = value_a.max(value_b);
+    let first = ((min_value / spacing).floor() as usize + 1).max(1);
+    let last = ((max_value / spacing).floor() as usize).min(level_count);
+
+    first..=last
 }
 
 fn emit_quad(
