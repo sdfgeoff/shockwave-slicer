@@ -2,10 +2,12 @@ mod cli;
 
 use std::env;
 use std::fs;
+use std::path::Path;
 use std::time::{Duration, Instant};
 
 use cli::parse_args;
 use rayon::prelude::*;
+use serde_json::Value;
 use shockwave_clip::{TriangleSolid, clip_mesh_to_solid};
 use shockwave_core::geometry::{Triangle, mesh_bounds};
 use shockwave_core::grid::{Grid, GridSpec, build_grid};
@@ -15,7 +17,8 @@ use shockwave_output::{
 };
 use shockwave_stl::parse_stl;
 use shockwave_voxel::field::{
-    AnisotropicEuclideanPropagation, Field, expand_field, propagate_field,
+    AnisotropicEuclideanPropagation, ExplicitKernelPropagation, Field, KernelMove, KernelPathCheck,
+    PropagationMethod, expand_field, propagate_field,
 };
 use shockwave_voxel::voxelize::generate_occupancy;
 
@@ -76,19 +79,111 @@ fn voxelize(
     log_timing("generate occupancy", occupancy_start.elapsed());
 
     let field = if config.field_enabled {
-        let propagation = AnisotropicEuclideanPropagation::new(config.field_rate);
-        let propagation_start = Instant::now();
-        let mut field = propagate_field(&occupancy, grid, &propagation)?;
-        log_timing("propagate field", propagation_start.elapsed());
-
-        let expansion_start = Instant::now();
-        expand_field(&mut field, grid, FIELD_EXTENSION_VOXELS, &propagation);
-        log_timing("expand field", expansion_start.elapsed());
-        Some(field)
+        Some(propagate_configured_field(config, &occupancy, grid)?)
     } else {
         None
     };
     Ok((grid, occupancy, field))
+}
+
+fn propagate_configured_field(
+    config: &cli::Config,
+    occupancy: &[u8],
+    grid: Grid,
+) -> Result<Field, String> {
+    if let Some(kernel_path) = &config.kernel_path {
+        let load_start = Instant::now();
+        let propagation = load_kernel_propagation(kernel_path)?;
+        log_timing("load kernel", load_start.elapsed());
+        eprintln!("Loaded kernel with {} moves", propagation.move_count());
+        propagate_and_expand(occupancy, grid, &propagation)
+    } else {
+        let propagation = AnisotropicEuclideanPropagation::new(config.field_rate);
+        propagate_and_expand(occupancy, grid, &propagation)
+    }
+}
+
+fn propagate_and_expand(
+    occupancy: &[u8],
+    grid: Grid,
+    propagation: &impl PropagationMethod,
+) -> Result<Field, String> {
+    let propagation_start = Instant::now();
+    let mut field = propagate_field(occupancy, grid, propagation)?;
+    log_timing("propagate field", propagation_start.elapsed());
+
+    let expansion_start = Instant::now();
+    expand_field(&mut field, grid, FIELD_EXTENSION_VOXELS, propagation);
+    log_timing("expand field", expansion_start.elapsed());
+    Ok(field)
+}
+
+fn load_kernel_propagation(path: &Path) -> Result<ExplicitKernelPropagation, String> {
+    let text = fs::read_to_string(path)
+        .map_err(|error| format!("failed to read kernel {}: {error}", path.display()))?;
+    let json: Value = serde_json::from_str(&text)
+        .map_err(|error| format!("failed to parse kernel {}: {error}", path.display()))?;
+
+    if json.get("type").and_then(Value::as_str) != Some("explicit") {
+        return Err("kernel JSON must have \"type\": \"explicit\"".to_string());
+    }
+
+    let path_check = match json
+        .get("path_check")
+        .and_then(Value::as_str)
+        .unwrap_or("swept_occupied")
+    {
+        "endpoint_occupied" => KernelPathCheck::EndpointOccupied,
+        "swept_occupied" => KernelPathCheck::SweptOccupied,
+        value => {
+            return Err(format!(
+                "kernel path_check must be endpoint_occupied or swept_occupied, got {value:?}"
+            ));
+        }
+    };
+
+    let moves = json
+        .get("moves")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "kernel JSON must contain a moves array".to_string())?
+        .iter()
+        .enumerate()
+        .map(parse_kernel_move)
+        .collect::<Result<Vec<_>, _>>()?;
+
+    ExplicitKernelPropagation::new(moves, path_check)
+}
+
+fn parse_kernel_move((index, value): (usize, &Value)) -> Result<KernelMove, String> {
+    let offset = value
+        .get("offset")
+        .and_then(Value::as_array)
+        .ok_or_else(|| format!("kernel move {index} must contain an offset array"))?;
+    if offset.len() != 3 {
+        return Err(format!("kernel move {index} offset must have three values"));
+    }
+
+    let mut parsed_offset = [0isize; 3];
+    for axis in 0..3 {
+        let Some(value) = offset[axis].as_i64() else {
+            return Err(format!(
+                "kernel move {index} offset values must be integers"
+            ));
+        };
+        parsed_offset[axis] = value
+            .try_into()
+            .map_err(|_| format!("kernel move {index} offset value is out of range"))?;
+    }
+
+    let cost = value
+        .get("cost")
+        .and_then(Value::as_f64)
+        .ok_or_else(|| format!("kernel move {index} must contain a numeric cost"))?;
+
+    Ok(KernelMove {
+        offset: parsed_offset,
+        cost,
+    })
 }
 
 struct OutputPaths {
@@ -174,6 +269,16 @@ fn write_outputs(
                 voxel_size: config.voxel_size,
                 padding_voxels: config.padding_voxels,
                 field_enabled: config.field_enabled,
+                field_method: if config.kernel_path.is_some() {
+                    "explicit-kernel"
+                } else {
+                    "anisotropic"
+                },
+                kernel_path: config
+                    .kernel_path
+                    .as_ref()
+                    .map(|path| path.display().to_string())
+                    .as_deref(),
                 field_rate: config.field_rate,
                 field_extension_voxels: FIELD_EXTENSION_VOXELS,
                 iso_spacing: config.iso_spacing,

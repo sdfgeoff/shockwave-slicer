@@ -35,6 +35,31 @@ The field value is normalized by `field_max_distance` in the JSON metadata. This
 
 When field generation is enabled, the propagated field is computed through occupied voxels first, then extended two voxels into neighboring empty space. The occupancy channel remains the authoritative object mask. The field extension exists so viewers can estimate derivatives at the occupancy boundary without sampling missing field values.
 
+## Explicit Growth Kernels
+
+`field-gen` can propagate the field with an explicit JSON kernel:
+
+```bash
+field-gen input.stl --voxel 1 1 1 --kernel kernel.json --iso-spacing 0.5 --output output/prefix
+```
+
+The kernel replaces `--field-rate` propagation and implies `--field`. Its `moves` array defines directed graph edges from each voxel:
+
+```json
+{
+  "version": 1,
+  "type": "explicit",
+  "units": "voxels",
+  "path_check": "swept_occupied",
+  "moves": [
+    { "offset": [1, 0, 0], "cost": 0.25 },
+    { "offset": [0, 0, 1], "cost": 1.0 }
+  ]
+}
+```
+
+`offset` values are integer voxel offsets and `cost` is the field-distance added by that move. `path_check` may be `endpoint_occupied` or `swept_occupied`. With `swept_occupied`, long moves are rejected if the segment crosses empty voxels during the occupied-volume propagation pass.
+
 ## Metadata
 
 The JSON sidecar records the values needed to interpret the atlas:
@@ -46,6 +71,8 @@ origin_mm: grid origin in STL/model coordinates
 image_grid: [columns, rows] atlas cell grid
 image_size_px: atlas pixel size
 field_enabled: whether R contains a propagated field
+field_method: anisotropic or explicit-kernel
+kernel_file: source JSON kernel when field_method is explicit-kernel
 field_rate: anisotropic propagation rates used by field-gen
 field_extension_voxels: number of voxels the field was extended beyond occupancy
 iso_spacing: distance between exported isosurface levels, when field output is enabled

@@ -19,6 +19,8 @@ pub struct Metadata<'a> {
     pub voxel_size: Vec3,
     pub padding_voxels: usize,
     pub field_enabled: bool,
+    pub field_method: &'a str,
+    pub kernel_path: Option<&'a str>,
     pub field_rate: Vec3,
     pub field_extension_voxels: usize,
     pub iso_spacing: f64,
@@ -207,6 +209,8 @@ pub fn metadata_json(document: &MetadataDocument<'_>) -> String {
             "  \"voxel_size_mm\": [{:.9}, {:.9}, {:.9}],\n",
             "  \"padding_voxels\": {},\n",
             "  \"field_enabled\": {},\n",
+            "  \"field_method\": {},\n",
+            "  \"kernel_file\": {},\n",
             "  \"field_rate\": [{:.9}, {:.9}, {:.9}],\n",
             "  \"field_extension_voxels\": {},\n",
             "  \"iso_spacing\": {},\n",
@@ -236,6 +240,12 @@ pub fn metadata_json(document: &MetadataDocument<'_>) -> String {
         document.metadata.voxel_size.z,
         document.metadata.padding_voxels,
         document.metadata.field_enabled,
+        string_or_null_json(if document.metadata.field_enabled {
+            Some(document.metadata.field_method)
+        } else {
+            None
+        }),
+        string_or_null_json(document.metadata.kernel_path),
         document.metadata.field_rate.x,
         document.metadata.field_rate.y,
         document.metadata.field_rate.z,
@@ -273,6 +283,12 @@ fn json_escape(value: &str) -> String {
 
 fn path_json(path: Option<&Path>) -> String {
     path.map(|path| format!("\"{}\"", json_escape(&path.display().to_string())))
+        .unwrap_or_else(|| "null".to_string())
+}
+
+fn string_or_null_json(value: Option<&str>) -> String {
+    value
+        .map(|value| format!("\"{}\"", json_escape(value)))
         .unwrap_or_else(|| "null".to_string())
 }
 

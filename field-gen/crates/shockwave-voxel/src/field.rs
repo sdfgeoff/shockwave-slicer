@@ -13,6 +13,9 @@ pub struct Field {
 pub trait PropagationMethod {
     fn seeds(&self, occupancy: &[u8], grid: Grid) -> Vec<usize>;
     fn neighbors(&self, index: usize, grid: Grid) -> Vec<(usize, f64)>;
+    fn can_traverse(&self, _occupancy: &[u8], _from: usize, _to: usize, _grid: Grid) -> bool {
+        true
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -86,6 +89,93 @@ impl PropagationMethod for AnisotropicEuclideanPropagation {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum KernelPathCheck {
+    EndpointOccupied,
+    SweptOccupied,
+}
+
+#[derive(Clone, Debug)]
+pub struct KernelMove {
+    pub offset: [isize; 3],
+    pub cost: f64,
+}
+
+#[derive(Clone, Debug)]
+pub struct ExplicitKernelPropagation {
+    moves: Vec<KernelMove>,
+    path_check: KernelPathCheck,
+}
+
+impl ExplicitKernelPropagation {
+    pub fn new(moves: Vec<KernelMove>, path_check: KernelPathCheck) -> Result<Self, String> {
+        if moves.is_empty() {
+            return Err("kernel must contain at least one move".to_string());
+        }
+
+        for kernel_move in &moves {
+            if kernel_move.offset == [0, 0, 0] {
+                return Err("kernel move offset must not be [0, 0, 0]".to_string());
+            }
+            if kernel_move.cost <= 0.0 || !kernel_move.cost.is_finite() {
+                return Err("kernel move cost must be finite and greater than zero".to_string());
+            }
+        }
+
+        Ok(Self { moves, path_check })
+    }
+
+    pub fn move_count(&self) -> usize {
+        self.moves.len()
+    }
+}
+
+impl PropagationMethod for ExplicitKernelPropagation {
+    fn seeds(&self, occupancy: &[u8], grid: Grid) -> Vec<usize> {
+        AnisotropicEuclideanPropagation::new(Vec3 {
+            x: 1.0,
+            y: 1.0,
+            z: 1.0,
+        })
+        .seeds(occupancy, grid)
+    }
+
+    fn neighbors(&self, index: usize, grid: Grid) -> Vec<(usize, f64)> {
+        let [x, y, z] = grid_coords(index, grid);
+        let mut neighbors = Vec::with_capacity(self.moves.len());
+
+        for kernel_move in &self.moves {
+            let nx = x as isize + kernel_move.offset[0];
+            let ny = y as isize + kernel_move.offset[1];
+            let nz = z as isize + kernel_move.offset[2];
+            if nx < 0
+                || ny < 0
+                || nz < 0
+                || nx >= grid.dims[0] as isize
+                || ny >= grid.dims[1] as isize
+                || nz >= grid.dims[2] as isize
+            {
+                continue;
+            }
+
+            neighbors.push((
+                grid.index(nx as usize, ny as usize, nz as usize),
+                kernel_move.cost,
+            ));
+        }
+
+        neighbors
+    }
+
+    fn can_traverse(&self, occupancy: &[u8], from: usize, to: usize, grid: Grid) -> bool {
+        if self.path_check == KernelPathCheck::EndpointOccupied {
+            return true;
+        }
+
+        swept_path_is_occupied(occupancy, from, to, grid)
+    }
+}
+
 pub fn propagate_field(
     occupancy: &[u8],
     grid: Grid,
@@ -113,6 +203,9 @@ pub fn propagate_field(
 
         for (neighbor, cost) in method.neighbors(entry.index, grid) {
             if occupancy[neighbor] == 0 {
+                continue;
+            }
+            if !method.can_traverse(occupancy, entry.index, neighbor, grid) {
                 continue;
             }
 
@@ -166,6 +259,36 @@ pub fn expand_field(field: &mut Field, grid: Grid, layers: usize, method: &impl 
         .copied()
         .filter(|value| value.is_finite())
         .fold(0.0, f64::max);
+}
+
+fn grid_coords(index: usize, grid: Grid) -> [usize; 3] {
+    let slice_len = grid.slice_len();
+    let z = index / slice_len;
+    let remainder = index % slice_len;
+    let y = remainder / grid.dims[0];
+    let x = remainder % grid.dims[0];
+    [x, y, z]
+}
+
+fn swept_path_is_occupied(occupancy: &[u8], from: usize, to: usize, grid: Grid) -> bool {
+    let [from_x, from_y, from_z] = grid_coords(from, grid);
+    let [to_x, to_y, to_z] = grid_coords(to, grid);
+    let dx = to_x as isize - from_x as isize;
+    let dy = to_y as isize - from_y as isize;
+    let dz = to_z as isize - from_z as isize;
+    let steps = dx.abs().max(dy.abs()).max(dz.abs()) as usize;
+
+    for step in 1..steps {
+        let t = step as f64 / steps as f64;
+        let x = (from_x as f64 + dx as f64 * t).round() as usize;
+        let y = (from_y as f64 + dy as f64 * t).round() as usize;
+        let z = (from_z as f64 + dz as f64 * t).round() as usize;
+        if occupancy[grid.index(x, y, z)] == 0 {
+            return false;
+        }
+    }
+
+    true
 }
 
 fn movement_cost(dx: isize, dy: isize, dz: isize, grid: Grid, rate: Vec3) -> f64 {
@@ -302,5 +425,45 @@ mod tests {
         assert_eq!(field.distances[grid.index(3, 0, 0)], 1.0);
         assert_eq!(field.distances[grid.index(4, 0, 0)], 2.0);
         assert_eq!(field.max_distance, 2.0);
+    }
+
+    #[test]
+    fn explicit_kernel_can_jump_with_endpoint_path_check() {
+        let grid = grid([3, 1, 2]);
+        let mut occupancy = vec![0; grid.voxel_count()];
+        occupancy[grid.index(0, 0, 0)] = 255;
+        occupancy[grid.index(2, 0, 1)] = 255;
+        let propagation = ExplicitKernelPropagation::new(
+            vec![KernelMove {
+                offset: [2, 0, 1],
+                cost: 1.0,
+            }],
+            KernelPathCheck::EndpointOccupied,
+        )
+        .unwrap();
+
+        let field = propagate_field(&occupancy, grid, &propagation).unwrap();
+
+        assert_eq!(field.distances[grid.index(2, 0, 1)], 1.0);
+    }
+
+    #[test]
+    fn explicit_kernel_swept_path_cannot_jump_empty_voxels() {
+        let grid = grid([3, 1, 2]);
+        let mut occupancy = vec![0; grid.voxel_count()];
+        occupancy[grid.index(0, 0, 0)] = 255;
+        occupancy[grid.index(2, 0, 1)] = 255;
+        let propagation = ExplicitKernelPropagation::new(
+            vec![KernelMove {
+                offset: [2, 0, 1],
+                cost: 1.0,
+            }],
+            KernelPathCheck::SweptOccupied,
+        )
+        .unwrap();
+
+        let field = propagate_field(&occupancy, grid, &propagation).unwrap();
+
+        assert!(field.distances[grid.index(2, 0, 1)].is_infinite());
     }
 }

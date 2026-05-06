@@ -5,6 +5,7 @@ edition.workspace = true
 
 [dependencies]
 rayon = "1.10"
+serde_json = "1.0"
 shockwave-clip = { path = "../shockwave-clip" }
 shockwave-core = { path = "../shockwave-core" }
 shockwave-iso = { path = "../shockwave-iso" }

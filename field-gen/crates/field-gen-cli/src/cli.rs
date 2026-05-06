@@ -12,6 +12,7 @@ pub struct Config {
     pub origin: Option<Vec3>,
     pub field_enabled: bool,
     pub field_rate: Vec3,
+    pub kernel_path: Option<PathBuf>,
     pub iso_spacing: f64,
 }
 
@@ -32,6 +33,7 @@ pub fn parse_args(args: Vec<String>) -> Result<Config, String> {
         y: 1.0,
         z: 1.0,
     };
+    let mut kernel_path = None;
     let mut iso_spacing = 0.5_f64;
     let mut index = 1;
 
@@ -59,6 +61,15 @@ pub fn parse_args(args: Vec<String>) -> Result<Config, String> {
             }
             "--field-rate" => {
                 field_rate = parse_vec3_flag("--field-rate", &args, &mut index)?;
+            }
+            "--kernel" => {
+                index += 1;
+                let path = args
+                    .get(index)
+                    .map(PathBuf::from)
+                    .ok_or_else(|| "--kernel requires a JSON kernel path".to_string())?;
+                kernel_path = Some(path);
+                field_enabled = true;
             }
             "--iso-spacing" => {
                 index += 1;
@@ -101,6 +112,7 @@ pub fn parse_args(args: Vec<String>) -> Result<Config, String> {
         origin,
         field_enabled,
         field_rate,
+        kernel_path,
         iso_spacing,
     })
 }
@@ -133,11 +145,12 @@ fn validate_positive_vec3(name: &str, value: Vec3) -> Result<(), String> {
 }
 
 fn usage() -> String {
-    "usage: field-gen <input.stl> --voxel <x-mm> <y-mm> <z-mm> [--size <x-mm> <y-mm> <z-mm>] [--padding-voxels <n>] [--origin <x-mm> <y-mm> <z-mm>] [--field] [--field-rate <x> <y> <z>] [--iso-spacing <distance>] [--output <prefix>]\n\
+    "usage: field-gen <input.stl> --voxel <x-mm> <y-mm> <z-mm> [--size <x-mm> <y-mm> <z-mm>] [--padding-voxels <n>] [--origin <x-mm> <y-mm> <z-mm>] [--field] [--field-rate <x> <y> <z>] [--kernel <kernel.json>] [--iso-spacing <distance>] [--output <prefix>]\n\
 \n\
 STL coordinates are assumed to be millimeters. If --size is provided, it is treated as a maximum grid size.\n\
 By default, the grid fits the STL bounds plus 3 voxels of padding on each side.\n\
 --field propagates an anisotropic field through occupied voxels from the lowest occupied Z slice.\n\
+--kernel propagates the field using an explicit JSON kernel instead of --field-rate.\n\
 --iso-spacing controls the spacing between exported isosurface levels when --field is enabled.\n\
 Voxel size takes priority: grid dimensions are ceil(size / voxel), so actual size may expand slightly."
         .to_string()
