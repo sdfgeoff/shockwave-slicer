@@ -13,6 +13,7 @@ FIELD ?= 1
 FIELD_RATE_X ?= 3.7
 FIELD_RATE_Y ?= 3.7
 FIELD_RATE_Z ?= 1
+KERNEL ?= $(INPUT_DIR)/truncated-cone-kernel.json
 ISO_SPACING ?= 0.25
 
 VOXEL_GEN := field-gen/target/release/field-gen
@@ -31,7 +32,11 @@ voxels: $(VOXEL_GEN)
 	found=0; \
 	field_args=""; \
 	if [ "$(FIELD)" != "0" ]; then \
-		field_args="--field --field-rate $(FIELD_RATE_X) $(FIELD_RATE_Y) $(FIELD_RATE_Z)"; \
+		if [ -n "$(KERNEL)" ]; then \
+			field_args="--kernel $(KERNEL)"; \
+		else \
+			field_args="--field --field-rate $(FIELD_RATE_X) $(FIELD_RATE_Y) $(FIELD_RATE_Z)"; \
+		fi; \
 	fi; \
 	for stl in "$(INPUT_DIR)"/*.stl "$(INPUT_DIR)"/*.STL; do \
 		[ -e "$$stl" ] || continue; \

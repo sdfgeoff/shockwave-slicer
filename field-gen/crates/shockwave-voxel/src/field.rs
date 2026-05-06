@@ -12,9 +12,21 @@ pub struct Field {
 
 pub trait PropagationMethod {
     fn seeds(&self, occupancy: &[u8], grid: Grid) -> Vec<usize>;
-    fn neighbors(&self, index: usize, grid: Grid) -> Vec<(usize, f64)>;
-    fn can_traverse(&self, _occupancy: &[u8], _from: usize, _to: usize, _grid: Grid) -> bool {
-        true
+
+    fn for_each_neighbor(&self, index: usize, grid: Grid, visit: &mut impl FnMut(usize, f64));
+
+    fn for_each_traversable_neighbor(
+        &self,
+        occupancy: &[u8],
+        index: usize,
+        grid: Grid,
+        visit: &mut impl FnMut(usize, f64),
+    ) {
+        self.for_each_neighbor(index, grid, &mut |neighbor, cost| {
+            if occupancy[neighbor] != 0 {
+                visit(neighbor, cost);
+            }
+        });
     }
 }
 
@@ -51,13 +63,12 @@ impl PropagationMethod for AnisotropicEuclideanPropagation {
         Vec::new()
     }
 
-    fn neighbors(&self, index: usize, grid: Grid) -> Vec<(usize, f64)> {
+    fn for_each_neighbor(&self, index: usize, grid: Grid, visit: &mut impl FnMut(usize, f64)) {
         let slice_len = grid.slice_len();
         let z = index / slice_len;
         let remainder = index % slice_len;
         let y = remainder / grid.dims[0];
         let x = remainder % grid.dims[0];
-        let mut neighbors = Vec::with_capacity(26);
 
         for dz in -1..=1 {
             for dy in -1..=1 {
@@ -80,12 +91,10 @@ impl PropagationMethod for AnisotropicEuclideanPropagation {
                     }
 
                     let cost = movement_cost(dx, dy, dz, grid, self.rate);
-                    neighbors.push((grid.index(nx as usize, ny as usize, nz as usize), cost));
+                    visit(grid.index(nx as usize, ny as usize, nz as usize), cost);
                 }
             }
         }
-
-        neighbors
     }
 }
 
@@ -103,8 +112,15 @@ pub struct KernelMove {
 
 #[derive(Clone, Debug)]
 pub struct ExplicitKernelPropagation {
-    moves: Vec<KernelMove>,
+    moves: Vec<PreparedKernelMove>,
     path_check: KernelPathCheck,
+}
+
+#[derive(Clone, Debug)]
+struct PreparedKernelMove {
+    offset: [isize; 3],
+    cost: f64,
+    swept_offsets: Vec<[isize; 3]>,
 }
 
 impl ExplicitKernelPropagation {
@@ -122,7 +138,17 @@ impl ExplicitKernelPropagation {
             }
         }
 
-        Ok(Self { moves, path_check })
+        Ok(Self {
+            moves: moves
+                .into_iter()
+                .map(|kernel_move| PreparedKernelMove {
+                    swept_offsets: swept_offsets(kernel_move.offset),
+                    offset: kernel_move.offset,
+                    cost: kernel_move.cost,
+                })
+                .collect(),
+            path_check,
+        })
     }
 
     pub fn move_count(&self) -> usize {
@@ -140,9 +166,8 @@ impl PropagationMethod for ExplicitKernelPropagation {
         .seeds(occupancy, grid)
     }
 
-    fn neighbors(&self, index: usize, grid: Grid) -> Vec<(usize, f64)> {
+    fn for_each_neighbor(&self, index: usize, grid: Grid, visit: &mut impl FnMut(usize, f64)) {
         let [x, y, z] = grid_coords(index, grid);
-        let mut neighbors = Vec::with_capacity(self.moves.len());
 
         for kernel_move in &self.moves {
             let nx = x as isize + kernel_move.offset[0];
@@ -158,21 +183,54 @@ impl PropagationMethod for ExplicitKernelPropagation {
                 continue;
             }
 
-            neighbors.push((
+            visit(
                 grid.index(nx as usize, ny as usize, nz as usize),
                 kernel_move.cost,
-            ));
+            );
         }
-
-        neighbors
     }
 
-    fn can_traverse(&self, occupancy: &[u8], from: usize, to: usize, grid: Grid) -> bool {
-        if self.path_check == KernelPathCheck::EndpointOccupied {
-            return true;
-        }
+    fn for_each_traversable_neighbor(
+        &self,
+        occupancy: &[u8],
+        index: usize,
+        grid: Grid,
+        visit: &mut impl FnMut(usize, f64),
+    ) {
+        let [x, y, z] = grid_coords(index, grid);
 
-        swept_path_is_occupied(occupancy, from, to, grid)
+        for kernel_move in &self.moves {
+            let nx = x as isize + kernel_move.offset[0];
+            let ny = y as isize + kernel_move.offset[1];
+            let nz = z as isize + kernel_move.offset[2];
+            if nx < 0
+                || ny < 0
+                || nz < 0
+                || nx >= grid.dims[0] as isize
+                || ny >= grid.dims[1] as isize
+                || nz >= grid.dims[2] as isize
+            {
+                continue;
+            }
+
+            let neighbor = grid.index(nx as usize, ny as usize, nz as usize);
+            if occupancy[neighbor] == 0 {
+                continue;
+            }
+
+            if self.path_check == KernelPathCheck::SweptOccupied
+                && !swept_offsets_are_occupied(
+                    occupancy,
+                    [x, y, z],
+                    &kernel_move.swept_offsets,
+                    grid,
+                )
+            {
+                continue;
+            }
+
+            visit(neighbor, kernel_move.cost);
+        }
     }
 }
 
@@ -201,23 +259,21 @@ pub fn propagate_field(
             continue;
         }
 
-        for (neighbor, cost) in method.neighbors(entry.index, grid) {
-            if occupancy[neighbor] == 0 {
-                continue;
-            }
-            if !method.can_traverse(occupancy, entry.index, neighbor, grid) {
-                continue;
-            }
-
-            let next_distance = entry.distance + cost;
-            if next_distance < distances[neighbor] {
-                distances[neighbor] = next_distance;
-                queue.push(QueueEntry {
-                    index: neighbor,
-                    distance: next_distance,
-                });
-            }
-        }
+        method.for_each_traversable_neighbor(
+            occupancy,
+            entry.index,
+            grid,
+            &mut |neighbor, cost| {
+                let next_distance = entry.distance + cost;
+                if next_distance < distances[neighbor] {
+                    distances[neighbor] = next_distance;
+                    queue.push(QueueEntry {
+                        index: neighbor,
+                        distance: next_distance,
+                    });
+                }
+            },
+        );
     }
 
     let max_distance = distances
@@ -242,12 +298,12 @@ pub fn expand_field(field: &mut Field, grid: Grid, layers: usize, method: &impl 
                 continue;
             }
 
-            for (neighbor, cost) in method.neighbors(index, grid) {
+            method.for_each_neighbor(index, grid, &mut |neighbor, cost| {
                 let next_distance = distance + cost;
                 if next_distance < next_distances[neighbor] {
                     next_distances[neighbor] = next_distance;
                 }
-            }
+            });
         }
 
         field.distances = next_distances;
@@ -270,19 +326,33 @@ fn grid_coords(index: usize, grid: Grid) -> [usize; 3] {
     [x, y, z]
 }
 
-fn swept_path_is_occupied(occupancy: &[u8], from: usize, to: usize, grid: Grid) -> bool {
-    let [from_x, from_y, from_z] = grid_coords(from, grid);
-    let [to_x, to_y, to_z] = grid_coords(to, grid);
-    let dx = to_x as isize - from_x as isize;
-    let dy = to_y as isize - from_y as isize;
-    let dz = to_z as isize - from_z as isize;
+fn swept_offsets(offset: [isize; 3]) -> Vec<[isize; 3]> {
+    let [dx, dy, dz] = offset;
     let steps = dx.abs().max(dy.abs()).max(dz.abs()) as usize;
+    let mut offsets = Vec::with_capacity(steps.saturating_sub(1));
 
     for step in 1..steps {
         let t = step as f64 / steps as f64;
-        let x = (from_x as f64 + dx as f64 * t).round() as usize;
-        let y = (from_y as f64 + dy as f64 * t).round() as usize;
-        let z = (from_z as f64 + dz as f64 * t).round() as usize;
+        offsets.push([
+            (dx as f64 * t).round() as isize,
+            (dy as f64 * t).round() as isize,
+            (dz as f64 * t).round() as isize,
+        ]);
+    }
+
+    offsets
+}
+
+fn swept_offsets_are_occupied(
+    occupancy: &[u8],
+    from: [usize; 3],
+    offsets: &[[isize; 3]],
+    grid: Grid,
+) -> bool {
+    for offset in offsets {
+        let x = (from[0] as isize + offset[0]) as usize;
+        let y = (from[1] as isize + offset[1]) as usize;
+        let z = (from[2] as isize + offset[2]) as usize;
         if occupancy[grid.index(x, y, z)] == 0 {
             return false;
         }
