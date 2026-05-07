@@ -439,6 +439,7 @@ impl PropagationProgress for NoProgress {
 }
 
 pub fn expand_field(field: &mut Field, grid: Grid, layers: usize, method: &impl PropagationMethod) {
+    let original_distances = field.distances.clone();
     for _ in 0..layers {
         let previous_distances = field.distances.clone();
         let mut next_distances = previous_distances.clone();
@@ -449,6 +450,10 @@ pub fn expand_field(field: &mut Field, grid: Grid, layers: usize, method: &impl 
             }
 
             method.for_each_neighbor(index, grid, &mut |neighbor, cost| {
+                if original_distances[neighbor].is_finite() {
+                    return;
+                }
+
                 let next_distance = distance + cost;
                 if next_distance < next_distances[neighbor] {
                     next_distances[neighbor] = next_distance;
@@ -921,6 +926,30 @@ mod tests {
         assert_eq!(field.distances[grid.index(3, 0, 0)], 1.0);
         assert_eq!(field.distances[grid.index(4, 0, 0)], 2.0);
         assert_eq!(field.max_distance, 2.0);
+    }
+
+    #[test]
+    fn expand_field_does_not_overwrite_existing_values() {
+        let grid = grid([5, 1, 1]);
+        let mut field = Field {
+            distances: vec![f64::INFINITY; grid.voxel_count()],
+            max_distance: 10.0,
+        };
+        field.distances[grid.index(0, 0, 0)] = 0.0;
+        field.distances[grid.index(3, 0, 0)] = 10.0;
+        let propagation = AnisotropicEuclideanPropagation::new(Vec3 {
+            x: 1.0,
+            y: 1.0,
+            z: 1.0,
+        });
+
+        expand_field(&mut field, grid, 2, &propagation);
+
+        assert_eq!(field.distances[grid.index(0, 0, 0)], 0.0);
+        assert_eq!(field.distances[grid.index(1, 0, 0)], 1.0);
+        assert_eq!(field.distances[grid.index(2, 0, 0)], 2.0);
+        assert_eq!(field.distances[grid.index(3, 0, 0)], 10.0);
+        assert_eq!(field.distances[grid.index(4, 0, 0)], 11.0);
     }
 
     #[test]
