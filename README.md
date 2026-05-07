@@ -60,6 +60,18 @@ The kernel replaces `--field-rate` propagation and implies `--field`. Its `moves
 
 `offset` values are integer voxel offsets and `cost` is the field-distance added by that move. `path_check` may be `endpoint_occupied` or `swept_occupied`. With `swept_occupied`, long moves are rejected if the segment crosses empty voxels during the occupied-volume propagation pass.
 
+## Propagation Constraints
+
+Field propagation also applies printer reachability constraints before isosurface extraction:
+
+```bash
+field-gen input.stl --voxel 1 1 1 --kernel kernel.json \
+  --max-unreached-below 5 \
+  --unreached-cone-angle 80
+```
+
+`--max-unreached-below` prevents a voxel from being reached while any other unreached occupied voxel is more than the configured distance below it. `--unreached-cone-angle` reserves an upward cone above every unreached occupied voxel until that voxel is reached. The angle is measured from vertical; the default is `80` degrees.
+
 ## Metadata
 
 The JSON sidecar records the values needed to interpret the atlas:
@@ -74,6 +86,8 @@ field_enabled: whether R contains a propagated field
 field_method: anisotropic or explicit-kernel
 kernel_file: source JSON kernel when field_method is explicit-kernel
 field_rate: anisotropic propagation rates used by field-gen
+max_unreached_below_mm: propagation height clearance limit
+unreached_cone_angle_degrees: unreached-point access cone angle from vertical
 field_extension_voxels: number of voxels the field was extended beyond occupancy
 iso_spacing: distance between exported isosurface levels, when field output is enabled
 field_max_distance: value used to normalize R into 0..255

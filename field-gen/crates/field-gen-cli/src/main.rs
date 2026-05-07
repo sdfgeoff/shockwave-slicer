@@ -18,7 +18,7 @@ use shockwave_output::{
 use shockwave_stl::parse_stl;
 use shockwave_voxel::field::{
     AnisotropicEuclideanPropagation, ExplicitKernelPropagation, Field, KernelMove, KernelPathCheck,
-    PropagationMethod, expand_field, propagate_field,
+    PropagationConstraints, PropagationMethod, expand_field, propagate_field_with_constraints,
 };
 use shockwave_voxel::voxelize::generate_occupancy;
 
@@ -96,20 +96,29 @@ fn propagate_configured_field(
         let propagation = load_kernel_propagation(kernel_path)?;
         log_timing("load kernel", load_start.elapsed());
         eprintln!("Loaded kernel with {} moves", propagation.move_count());
-        propagate_and_expand(occupancy, grid, &propagation)
+        propagate_and_expand(config, occupancy, grid, &propagation)
     } else {
         let propagation = AnisotropicEuclideanPropagation::new(config.field_rate);
-        propagate_and_expand(occupancy, grid, &propagation)
+        propagate_and_expand(config, occupancy, grid, &propagation)
     }
 }
 
 fn propagate_and_expand(
+    config: &cli::Config,
     occupancy: &[u8],
     grid: Grid,
     propagation: &impl PropagationMethod,
 ) -> Result<Field, String> {
     let propagation_start = Instant::now();
-    let mut field = propagate_field(occupancy, grid, propagation)?;
+    let mut field = propagate_field_with_constraints(
+        occupancy,
+        grid,
+        propagation,
+        PropagationConstraints {
+            max_unreached_below_mm: Some(config.max_unreached_below_mm),
+            unreached_cone_angle_degrees: Some(config.unreached_cone_angle_degrees),
+        },
+    )?;
     log_timing("propagate field", propagation_start.elapsed());
 
     let expansion_start = Instant::now();
@@ -280,6 +289,8 @@ fn write_outputs(
                     .map(|path| path.display().to_string())
                     .as_deref(),
                 field_rate: config.field_rate,
+                max_unreached_below_mm: config.max_unreached_below_mm,
+                unreached_cone_angle_degrees: config.unreached_cone_angle_degrees,
                 field_extension_voxels: FIELD_EXTENSION_VOXELS,
                 iso_spacing: config.iso_spacing,
             },

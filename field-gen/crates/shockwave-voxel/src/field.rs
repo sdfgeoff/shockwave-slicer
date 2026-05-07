@@ -10,6 +10,12 @@ pub struct Field {
     pub max_distance: f64,
 }
 
+#[derive(Clone, Copy, Debug, Default)]
+pub struct PropagationConstraints {
+    pub max_unreached_below_mm: Option<f64>,
+    pub unreached_cone_angle_degrees: Option<f64>,
+}
+
 pub trait PropagationMethod {
     fn seeds(&self, occupancy: &[u8], grid: Grid) -> Vec<usize>;
 
@@ -239,13 +245,25 @@ pub fn propagate_field(
     grid: Grid,
     method: &impl PropagationMethod,
 ) -> Result<Field, String> {
+    propagate_field_with_constraints(occupancy, grid, method, PropagationConstraints::default())
+}
+
+pub fn propagate_field_with_constraints(
+    occupancy: &[u8],
+    grid: Grid,
+    method: &impl PropagationMethod,
+    constraints: PropagationConstraints,
+) -> Result<Field, String> {
     if occupancy.len() != grid.voxel_count() {
         return Err("occupancy length does not match grid dimensions".to_string());
     }
 
     let mut distances = vec![f64::INFINITY; occupancy.len()];
+    let mut reached = vec![false; occupancy.len()];
     let components = occupied_components(occupancy, grid);
     let mut queue = BinaryHeap::new();
+    let mut deferred = Vec::new();
+    let mut current_distance = 0.0;
 
     for seed in method.seeds(occupancy, grid) {
         distances[seed] = 0.0;
@@ -259,6 +277,19 @@ pub fn propagate_field(
         if entry.distance > distances[entry.index] {
             continue;
         }
+        if reached[entry.index] {
+            continue;
+        }
+        if !constraints_allow_candidate(occupancy, grid, entry.index, &reached, constraints) {
+            deferred.push(entry);
+            continue;
+        }
+
+        let entry_distance = entry.distance.max(current_distance);
+        distances[entry.index] = entry_distance;
+        current_distance = entry_distance;
+        reached[entry.index] = true;
+        queue.extend(deferred.drain(..));
 
         method.for_each_traversable_neighbor(
             occupancy,
@@ -269,7 +300,7 @@ pub fn propagate_field(
                     return;
                 }
 
-                let next_distance = entry.distance + cost;
+                let next_distance = entry_distance + cost;
                 if next_distance < distances[neighbor] {
                     distances[neighbor] = next_distance;
                     queue.push(QueueEntry {
@@ -360,6 +391,55 @@ fn swept_offsets_are_occupied(
         let z = (from[2] as isize + offset[2]) as usize;
         if occupancy[grid.index(x, y, z)] == 0 {
             return false;
+        }
+    }
+
+    true
+}
+
+fn constraints_allow_candidate(
+    occupancy: &[u8],
+    grid: Grid,
+    candidate: usize,
+    reached: &[bool],
+    constraints: PropagationConstraints,
+) -> bool {
+    if constraints.max_unreached_below_mm.is_none()
+        && constraints.unreached_cone_angle_degrees.is_none()
+    {
+        return true;
+    }
+
+    let [candidate_x, candidate_y, candidate_z] = grid_coords(candidate, grid);
+    let candidate_z_mm = candidate_z as f64 * grid.voxel_size.z;
+    let cone_tan = constraints
+        .unreached_cone_angle_degrees
+        .map(|angle| angle.to_radians().tan());
+
+    for (index, occupied) in occupancy.iter().copied().enumerate() {
+        if occupied == 0 || reached[index] || index == candidate {
+            continue;
+        }
+
+        let [x, y, z] = grid_coords(index, grid);
+        let dz_mm = candidate_z_mm - z as f64 * grid.voxel_size.z;
+        if dz_mm <= 0.0 {
+            continue;
+        }
+
+        if let Some(max_unreached_below_mm) = constraints.max_unreached_below_mm
+            && dz_mm > max_unreached_below_mm
+        {
+            return false;
+        }
+
+        if let Some(cone_tan) = cone_tan {
+            let dx_mm = (candidate_x as isize - x as isize) as f64 * grid.voxel_size.x;
+            let dy_mm = (candidate_y as isize - y as isize) as f64 * grid.voxel_size.y;
+            let radial_mm = dx_mm.hypot(dy_mm);
+            if radial_mm <= dz_mm * cone_tan {
+                return false;
+            }
         }
     }
 
@@ -641,5 +721,97 @@ mod tests {
         let field = propagate_field(&occupancy, grid, &propagation).unwrap();
 
         assert_eq!(field.distances[grid.index(3, 0, 1)], 1.0);
+    }
+
+    #[test]
+    fn height_constraint_delays_voxels_above_unreached_material() {
+        let grid = grid([2, 1, 3]);
+        let mut occupancy = vec![0; grid.voxel_count()];
+        occupancy[grid.index(0, 0, 0)] = 255;
+        occupancy[grid.index(0, 0, 1)] = 255;
+        occupancy[grid.index(1, 0, 1)] = 255;
+        occupancy[grid.index(1, 0, 2)] = 255;
+        let propagation = ExplicitKernelPropagation::new(
+            vec![
+                KernelMove {
+                    offset: [1, 0, 2],
+                    cost: 1.0,
+                },
+                KernelMove {
+                    offset: [1, 0, 1],
+                    cost: 2.0,
+                },
+                KernelMove {
+                    offset: [0, 0, 1],
+                    cost: 2.0,
+                },
+                KernelMove {
+                    offset: [1, 0, 0],
+                    cost: 2.0,
+                },
+            ],
+            KernelPathCheck::EndpointOccupied,
+        )
+        .unwrap();
+
+        let field = propagate_field_with_constraints(
+            &occupancy,
+            grid,
+            &propagation,
+            PropagationConstraints {
+                max_unreached_below_mm: Some(0.5),
+                unreached_cone_angle_degrees: None,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(field.distances[grid.index(1, 0, 1)], 2.0);
+        assert_eq!(field.distances[grid.index(1, 0, 2)], 2.0);
+    }
+
+    #[test]
+    fn cone_constraint_delays_voxels_inside_unreached_access_cone() {
+        let grid = grid([2, 1, 3]);
+        let mut occupancy = vec![0; grid.voxel_count()];
+        occupancy[grid.index(0, 0, 0)] = 255;
+        occupancy[grid.index(0, 0, 1)] = 255;
+        occupancy[grid.index(1, 0, 1)] = 255;
+        occupancy[grid.index(1, 0, 2)] = 255;
+        let propagation = ExplicitKernelPropagation::new(
+            vec![
+                KernelMove {
+                    offset: [1, 0, 2],
+                    cost: 1.0,
+                },
+                KernelMove {
+                    offset: [1, 0, 1],
+                    cost: 2.0,
+                },
+                KernelMove {
+                    offset: [0, 0, 1],
+                    cost: 2.0,
+                },
+                KernelMove {
+                    offset: [1, 0, 0],
+                    cost: 2.0,
+                },
+            ],
+            KernelPathCheck::EndpointOccupied,
+        )
+        .unwrap();
+
+        let field = propagate_field_with_constraints(
+            &occupancy,
+            grid,
+            &propagation,
+            PropagationConstraints {
+                max_unreached_below_mm: None,
+                unreached_cone_angle_degrees: Some(45.0),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(field.distances[grid.index(1, 0, 1)], 2.0);
+        assert_eq!(field.distances[grid.index(1, 0, 2)], 2.0);
     }
 }

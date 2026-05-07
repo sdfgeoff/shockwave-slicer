@@ -13,6 +13,8 @@ pub struct Config {
     pub field_enabled: bool,
     pub field_rate: Vec3,
     pub kernel_path: Option<PathBuf>,
+    pub max_unreached_below_mm: f64,
+    pub unreached_cone_angle_degrees: f64,
     pub iso_spacing: f64,
 }
 
@@ -34,6 +36,8 @@ pub fn parse_args(args: Vec<String>) -> Result<Config, String> {
         z: 1.0,
     };
     let mut kernel_path = None;
+    let mut max_unreached_below_mm = 5.0;
+    let mut unreached_cone_angle_degrees = 80.0;
     let mut iso_spacing = 0.5_f64;
     let mut index = 1;
 
@@ -70,6 +74,16 @@ pub fn parse_args(args: Vec<String>) -> Result<Config, String> {
                     .ok_or_else(|| "--kernel requires a JSON kernel path".to_string())?;
                 kernel_path = Some(path);
                 field_enabled = true;
+            }
+            "--max-unreached-below" => {
+                index += 1;
+                max_unreached_below_mm =
+                    parse_non_negative_number("--max-unreached-below", &args, index)?;
+            }
+            "--unreached-cone-angle" => {
+                index += 1;
+                unreached_cone_angle_degrees =
+                    parse_angle_degrees("--unreached-cone-angle", &args, index)?;
             }
             "--iso-spacing" => {
                 index += 1;
@@ -113,6 +127,8 @@ pub fn parse_args(args: Vec<String>) -> Result<Config, String> {
         field_enabled,
         field_rate,
         kernel_path,
+        max_unreached_below_mm,
+        unreached_cone_angle_degrees,
         iso_spacing,
     })
 }
@@ -144,13 +160,41 @@ fn validate_positive_vec3(name: &str, value: Vec3) -> Result<(), String> {
     Ok(())
 }
 
+fn parse_non_negative_number(flag: &str, args: &[String], index: usize) -> Result<f64, String> {
+    let value = args
+        .get(index)
+        .ok_or_else(|| format!("{flag} requires a non-negative numeric value"))?
+        .parse()
+        .map_err(|_| format!("{flag} must be numeric"))?;
+    if value < 0.0 || !f64::is_finite(value) {
+        return Err(format!(
+            "{flag} must be a finite number greater than or equal to zero"
+        ));
+    }
+    Ok(value)
+}
+
+fn parse_angle_degrees(flag: &str, args: &[String], index: usize) -> Result<f64, String> {
+    let value = args
+        .get(index)
+        .ok_or_else(|| format!("{flag} requires an angle in degrees"))?
+        .parse()
+        .map_err(|_| format!("{flag} must be numeric"))?;
+    if !(0.0..90.0).contains(&value) || !f64::is_finite(value) {
+        return Err(format!("{flag} must be finite and in the range [0, 90)"));
+    }
+    Ok(value)
+}
+
 fn usage() -> String {
-    "usage: field-gen <input.stl> --voxel <x-mm> <y-mm> <z-mm> [--size <x-mm> <y-mm> <z-mm>] [--padding-voxels <n>] [--origin <x-mm> <y-mm> <z-mm>] [--field] [--field-rate <x> <y> <z>] [--kernel <kernel.json>] [--iso-spacing <distance>] [--output <prefix>]\n\
+    "usage: field-gen <input.stl> --voxel <x-mm> <y-mm> <z-mm> [--size <x-mm> <y-mm> <z-mm>] [--padding-voxels <n>] [--origin <x-mm> <y-mm> <z-mm>] [--field] [--field-rate <x> <y> <z>] [--kernel <kernel.json>] [--max-unreached-below <mm>] [--unreached-cone-angle <degrees>] [--iso-spacing <distance>] [--output <prefix>]\n\
 \n\
 STL coordinates are assumed to be millimeters. If --size is provided, it is treated as a maximum grid size.\n\
 By default, the grid fits the STL bounds plus 3 voxels of padding on each side.\n\
 --field propagates an anisotropic field through occupied voxels from the lowest occupied Z slice.\n\
 --kernel propagates the field using an explicit JSON kernel instead of --field-rate.\n\
+--max-unreached-below defaults to 5mm and prevents reaching high voxels while lower occupied voxels remain unreached.\n\
+--unreached-cone-angle defaults to 80 degrees from vertical and reserves access cones above unreached occupied voxels.\n\
 --iso-spacing controls the spacing between exported isosurface levels when --field is enabled.\n\
 Voxel size takes priority: grid dimensions are ceil(size / voxel), so actual size may expand slightly."
         .to_string()

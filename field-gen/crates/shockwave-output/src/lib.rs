@@ -22,6 +22,8 @@ pub struct Metadata<'a> {
     pub field_method: &'a str,
     pub kernel_path: Option<&'a str>,
     pub field_rate: Vec3,
+    pub max_unreached_below_mm: f64,
+    pub unreached_cone_angle_degrees: f64,
     pub field_extension_voxels: usize,
     pub iso_spacing: f64,
 }
@@ -212,6 +214,8 @@ pub fn metadata_json(document: &MetadataDocument<'_>) -> String {
             "  \"field_method\": {},\n",
             "  \"kernel_file\": {},\n",
             "  \"field_rate\": [{:.9}, {:.9}, {:.9}],\n",
+            "  \"max_unreached_below_mm\": {},\n",
+            "  \"unreached_cone_angle_degrees\": {},\n",
             "  \"field_extension_voxels\": {},\n",
             "  \"iso_spacing\": {},\n",
             "  \"field_max_distance\": {},\n",
@@ -249,6 +253,16 @@ pub fn metadata_json(document: &MetadataDocument<'_>) -> String {
         document.metadata.field_rate.x,
         document.metadata.field_rate.y,
         document.metadata.field_rate.z,
+        if document.metadata.field_enabled {
+            format!("{:.9}", document.metadata.max_unreached_below_mm)
+        } else {
+            "null".to_string()
+        },
+        if document.metadata.field_enabled {
+            format!("{:.9}", document.metadata.unreached_cone_angle_degrees)
+        } else {
+            "null".to_string()
+        },
         if document.metadata.field_enabled {
             document.metadata.field_extension_voxels
         } else {
