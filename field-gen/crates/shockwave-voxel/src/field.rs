@@ -244,6 +244,7 @@ pub fn propagate_field(
     }
 
     let mut distances = vec![f64::INFINITY; occupancy.len()];
+    let components = occupied_components(occupancy, grid);
     let mut queue = BinaryHeap::new();
 
     for seed in method.seeds(occupancy, grid) {
@@ -264,6 +265,10 @@ pub fn propagate_field(
             entry.index,
             grid,
             &mut |neighbor, cost| {
+                if components[entry.index] != components[neighbor] {
+                    return;
+                }
+
                 let next_distance = entry.distance + cost;
                 if next_distance < distances[neighbor] {
                     distances[neighbor] = next_distance;
@@ -359,6 +364,63 @@ fn swept_offsets_are_occupied(
     }
 
     true
+}
+
+fn occupied_components(occupancy: &[u8], grid: Grid) -> Vec<usize> {
+    let mut components = vec![usize::MAX; occupancy.len()];
+    let mut next_component = 0usize;
+    let mut stack = Vec::new();
+
+    for index in 0..occupancy.len() {
+        if occupancy[index] == 0 || components[index] != usize::MAX {
+            continue;
+        }
+
+        components[index] = next_component;
+        stack.push(index);
+
+        while let Some(current) = stack.pop() {
+            for_face_neighbor(current, grid, &mut |neighbor| {
+                if occupancy[neighbor] != 0 && components[neighbor] == usize::MAX {
+                    components[neighbor] = next_component;
+                    stack.push(neighbor);
+                }
+            });
+        }
+
+        next_component += 1;
+    }
+
+    components
+}
+
+fn for_face_neighbor(index: usize, grid: Grid, visit: &mut impl FnMut(usize)) {
+    let [x, y, z] = grid_coords(index, grid);
+    let offsets = [
+        [-1, 0, 0],
+        [1, 0, 0],
+        [0, -1, 0],
+        [0, 1, 0],
+        [0, 0, -1],
+        [0, 0, 1],
+    ];
+
+    for [dx, dy, dz] in offsets {
+        let nx = x as isize + dx;
+        let ny = y as isize + dy;
+        let nz = z as isize + dz;
+        if nx < 0
+            || ny < 0
+            || nz < 0
+            || nx >= grid.dims[0] as isize
+            || ny >= grid.dims[1] as isize
+            || nz >= grid.dims[2] as isize
+        {
+            continue;
+        }
+
+        visit(grid.index(nx as usize, ny as usize, nz as usize));
+    }
 }
 
 fn movement_cost(dx: isize, dy: isize, dz: isize, grid: Grid, rate: Vec3) -> f64 {
@@ -502,6 +564,8 @@ mod tests {
         let grid = grid([3, 1, 2]);
         let mut occupancy = vec![0; grid.voxel_count()];
         occupancy[grid.index(0, 0, 0)] = 255;
+        occupancy[grid.index(1, 0, 0)] = 255;
+        occupancy[grid.index(2, 0, 0)] = 255;
         occupancy[grid.index(2, 0, 1)] = 255;
         let propagation = ExplicitKernelPropagation::new(
             vec![KernelMove {
@@ -535,5 +599,47 @@ mod tests {
         let field = propagate_field(&occupancy, grid, &propagation).unwrap();
 
         assert!(field.distances[grid.index(2, 0, 1)].is_infinite());
+    }
+
+    #[test]
+    fn explicit_kernel_cannot_cross_disconnected_occupied_gap() {
+        let grid = grid([5, 1, 2]);
+        let mut occupancy = vec![0; grid.voxel_count()];
+        occupancy[grid.index(0, 0, 0)] = 255;
+        occupancy[grid.index(3, 0, 1)] = 255;
+        let propagation = ExplicitKernelPropagation::new(
+            vec![KernelMove {
+                offset: [3, 0, 1],
+                cost: 1.0,
+            }],
+            KernelPathCheck::EndpointOccupied,
+        )
+        .unwrap();
+
+        let field = propagate_field(&occupancy, grid, &propagation).unwrap();
+
+        assert!(field.distances[grid.index(3, 0, 1)].is_infinite());
+    }
+
+    #[test]
+    fn explicit_kernel_can_use_large_move_within_connected_component() {
+        let grid = grid([5, 1, 2]);
+        let mut occupancy = vec![0; grid.voxel_count()];
+        for x in 0..=3 {
+            occupancy[grid.index(x, 0, 0)] = 255;
+        }
+        occupancy[grid.index(3, 0, 1)] = 255;
+        let propagation = ExplicitKernelPropagation::new(
+            vec![KernelMove {
+                offset: [3, 0, 1],
+                cost: 1.0,
+            }],
+            KernelPathCheck::EndpointOccupied,
+        )
+        .unwrap();
+
+        let field = propagate_field(&occupancy, grid, &propagation).unwrap();
+
+        assert_eq!(field.distances[grid.index(3, 0, 1)], 1.0);
     }
 }
