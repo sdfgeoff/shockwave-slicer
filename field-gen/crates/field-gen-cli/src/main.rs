@@ -18,7 +18,8 @@ use shockwave_output::{
 use shockwave_stl::parse_stl;
 use shockwave_voxel::field::{
     AnisotropicEuclideanPropagation, ExplicitKernelPropagation, Field, KernelMove, KernelPathCheck,
-    PropagationConstraints, PropagationMethod, expand_field, propagate_field_with_constraints,
+    PropagationConstraints, PropagationMethod, StderrProgress, expand_field,
+    propagate_field_with_progress,
 };
 use shockwave_voxel::voxelize::generate_occupancy;
 
@@ -110,7 +111,8 @@ fn propagate_and_expand(
     propagation: &impl PropagationMethod,
 ) -> Result<Field, String> {
     let propagation_start = Instant::now();
-    let mut field = propagate_field_with_constraints(
+    let mut progress = StderrProgress::new("propagate field");
+    let mut field = propagate_field_with_progress(
         occupancy,
         grid,
         propagation,
@@ -119,6 +121,7 @@ fn propagate_and_expand(
             unreached_cone_angle_degrees: Some(config.unreached_cone_angle_degrees),
             unreached_cone_max_height_mm: Some(config.max_unreached_below_mm),
         },
+        &mut progress,
     )?;
     log_timing("propagate field", propagation_start.elapsed());
 

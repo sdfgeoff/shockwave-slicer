@@ -1,5 +1,6 @@
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
+use std::time::{Duration, Instant};
 
 use shockwave_core::geometry::Vec3;
 use shockwave_core::grid::Grid;
@@ -15,6 +16,11 @@ pub struct PropagationConstraints {
     pub max_unreached_below_mm: Option<f64>,
     pub unreached_cone_angle_degrees: Option<f64>,
     pub unreached_cone_max_height_mm: Option<f64>,
+}
+
+pub trait PropagationProgress {
+    fn update(&mut self, reached: usize, total: usize);
+    fn finish(&mut self, reached: usize, total: usize);
 }
 
 pub trait PropagationMethod {
@@ -255,16 +261,29 @@ pub fn propagate_field_with_constraints(
     method: &impl PropagationMethod,
     constraints: PropagationConstraints,
 ) -> Result<Field, String> {
+    propagate_field_with_progress(occupancy, grid, method, constraints, &mut NoProgress)
+}
+
+pub fn propagate_field_with_progress(
+    occupancy: &[u8],
+    grid: Grid,
+    method: &impl PropagationMethod,
+    constraints: PropagationConstraints,
+    progress: &mut impl PropagationProgress,
+) -> Result<Field, String> {
     if occupancy.len() != grid.voxel_count() {
         return Err("occupancy length does not match grid dimensions".to_string());
     }
 
+    let total_occupied = occupancy.iter().filter(|value| **value != 0).count();
     let mut distances = vec![f64::INFINITY; occupancy.len()];
     let mut reached = vec![false; occupancy.len()];
     let components = occupied_components(occupancy, grid);
     let mut queue = BinaryHeap::new();
     let mut deferred = Vec::new();
     let mut current_distance = 0.0;
+    let mut reached_count = 0usize;
+    progress.update(reached_count, total_occupied);
 
     for seed in method.seeds(occupancy, grid) {
         distances[seed] = 0.0;
@@ -290,6 +309,8 @@ pub fn propagate_field_with_constraints(
         distances[entry.index] = entry_distance;
         current_distance = entry_distance;
         reached[entry.index] = true;
+        reached_count += 1;
+        progress.update(reached_count, total_occupied);
         queue.extend(deferred.drain(..));
 
         method.for_each_traversable_neighbor(
@@ -318,11 +339,79 @@ pub fn propagate_field_with_constraints(
         .copied()
         .filter(|value| value.is_finite())
         .fold(0.0, f64::max);
+    progress.finish(reached_count, total_occupied);
 
     Ok(Field {
         distances,
         max_distance,
     })
+}
+
+pub struct StderrProgress {
+    label: &'static str,
+    next_percent: usize,
+    last_print: Instant,
+}
+
+impl StderrProgress {
+    pub fn new(label: &'static str) -> Self {
+        Self {
+            label,
+            next_percent: 0,
+            last_print: Instant::now() - Duration::from_secs(1),
+        }
+    }
+}
+
+impl PropagationProgress for StderrProgress {
+    fn update(&mut self, reached: usize, total: usize) {
+        if total == 0 {
+            if reached == 0 && self.next_percent == 0 {
+                eprintln!("{}: 100.0% (0 / 0)", self.label);
+                self.next_percent = 101;
+            }
+            return;
+        }
+
+        let percent = reached * 100 / total;
+        let now = Instant::now();
+        if percent >= self.next_percent
+            || reached == total
+            || now.duration_since(self.last_print) >= Duration::from_secs(2)
+        {
+            eprintln!(
+                "{}: {:>5.1}% ({} / {})",
+                self.label,
+                reached as f64 * 100.0 / total as f64,
+                reached,
+                total
+            );
+            self.next_percent = percent.saturating_add(5);
+            self.last_print = now;
+        }
+    }
+
+    fn finish(&mut self, reached: usize, total: usize) {
+        if total == 0 {
+            eprintln!("{}: complete (0 / 0)", self.label);
+            return;
+        }
+
+        eprintln!(
+            "{}: complete {:>5.1}% ({} / {})",
+            self.label,
+            reached as f64 * 100.0 / total as f64,
+            reached,
+            total
+        );
+    }
+}
+
+struct NoProgress;
+
+impl PropagationProgress for NoProgress {
+    fn update(&mut self, _reached: usize, _total: usize) {}
+    fn finish(&mut self, _reached: usize, _total: usize) {}
 }
 
 pub fn expand_field(field: &mut Field, grid: Grid, layers: usize, method: &impl PropagationMethod) {
