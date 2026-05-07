@@ -5,6 +5,8 @@ use std::time::{Duration, Instant};
 use shockwave_core::geometry::Vec3;
 use shockwave_core::grid::Grid;
 
+const DEFERRED_RETRY_REACHED_INTERVAL: usize = 5_000;
+
 #[derive(Clone, Debug)]
 pub struct Field {
     pub distances: Vec<f64>,
@@ -285,6 +287,7 @@ pub fn propagate_field_with_progress(
     let mut deferred = Vec::new();
     let mut current_distance = 0.0;
     let mut reached_count = 0usize;
+    let mut last_empty_retry_reached = None;
 
     for seed in method.seeds(occupancy, grid) {
         distances[seed] = 0.0;
@@ -294,7 +297,23 @@ pub fn propagate_field_with_progress(
         });
     }
 
-    while let Some(entry) = queue.pop() {
+    loop {
+        if queue.is_empty() {
+            if deferred.is_empty() {
+                break;
+            }
+            if last_empty_retry_reached == Some(reached_count) {
+                break;
+            }
+
+            last_empty_retry_reached = Some(reached_count);
+            queue.extend(deferred.drain(..));
+        }
+
+        let Some(entry) = queue.pop() else {
+            break;
+        };
+
         if entry.distance > distances[entry.index] {
             continue;
         }
@@ -312,8 +331,11 @@ pub fn propagate_field_with_progress(
         reached[entry.index] = true;
         constraint_state.mark_reached(entry.index);
         reached_count += 1;
+        last_empty_retry_reached = None;
         progress.update(reached_count, total_occupied);
-        queue.extend(deferred.drain(..));
+        if reached_count.is_multiple_of(DEFERRED_RETRY_REACHED_INTERVAL) {
+            queue.extend(deferred.drain(..));
+        }
 
         method.for_each_traversable_neighbor(
             occupancy,
@@ -492,54 +514,51 @@ fn swept_offsets_are_occupied(
 struct ConstraintState {
     grid: Grid,
     constraints: PropagationConstraints,
-    occupancy: Vec<bool>,
     unreached: Vec<bool>,
-    cone_active: Vec<bool>,
     unreached_by_z: Vec<usize>,
     lowest_unreached_z: usize,
-    active_cone_max_z: Option<usize>,
-    cone_max_dz: usize,
-    cone_offsets: Vec<[isize; 3]>,
-    cone_blocked: Vec<u32>,
+    cone_slices: Vec<ConeSlice>,
+    unreached_bits: Vec<u64>,
+    row_words: usize,
+}
+
+struct ConeSlice {
+    dz: usize,
+    rows: Vec<ConeRow>,
+}
+
+struct ConeRow {
+    dy: isize,
+    dx_max: isize,
 }
 
 impl ConstraintState {
     fn new(occupancy: &[u8], grid: Grid, constraints: PropagationConstraints) -> Self {
-        let mut occupancy_mask = vec![false; occupancy.len()];
+        let row_words = grid.dims[0].div_ceil(u64::BITS as usize);
+        let mut unreached_bits = vec![0u64; grid.dims[2] * grid.dims[1] * row_words];
+        let mut unreached = vec![false; occupancy.len()];
         let mut unreached_by_z = vec![0usize; grid.dims[2]];
         for (index, occupied) in occupancy.iter().copied().enumerate() {
             if occupied != 0 {
-                occupancy_mask[index] = true;
-                unreached_by_z[grid_coords(index, grid)[2]] += 1;
+                unreached[index] = true;
+                let [x, y, z] = grid_coords(index, grid);
+                unreached_by_z[z] += 1;
+                set_unreached_bit(&mut unreached_bits, grid, row_words, x, y, z);
             }
         }
 
-        let cone_offsets = cone_offsets(grid, constraints);
-        let cone_max_dz = cone_offsets
-            .iter()
-            .map(|offset| offset[2] as usize)
-            .max()
-            .unwrap_or(0);
+        let cone_slices = cone_slices(grid, constraints);
         let lowest_unreached_z = lowest_non_empty_z(&unreached_by_z);
-        let mut state = Self {
+        Self {
             grid,
             constraints,
-            occupancy: occupancy_mask.clone(),
-            unreached: occupancy_mask,
-            cone_active: vec![false; occupancy.len()],
+            unreached,
             lowest_unreached_z,
-            active_cone_max_z: None,
-            cone_max_dz,
             unreached_by_z,
-            cone_offsets,
-            cone_blocked: vec![0; occupancy.len()],
-        };
-
-        if !state.cone_offsets.is_empty() {
-            state.extend_active_cone_window();
+            cone_slices,
+            unreached_bits,
+            row_words,
         }
-
-        state
     }
 
     fn candidate_allowed(&self, candidate: usize) -> bool {
@@ -554,7 +573,7 @@ impl ConstraintState {
             }
         }
 
-        self.cone_blocked[candidate] == 0
+        self.cone_clear(candidate)
     }
 
     fn mark_reached(&mut self, index: usize) {
@@ -565,69 +584,51 @@ impl ConstraintState {
         self.unreached[index] = false;
         let z = grid_coords(index, self.grid)[2];
         self.unreached_by_z[z] = self.unreached_by_z[z].saturating_sub(1);
+        let [x, y, z] = grid_coords(index, self.grid);
+        clear_unreached_bit(&mut self.unreached_bits, self.grid, self.row_words, x, y, z);
         while self.lowest_unreached_z < self.unreached_by_z.len()
             && self.unreached_by_z[self.lowest_unreached_z] == 0
         {
             self.lowest_unreached_z += 1;
         }
-
-        if !self.cone_offsets.is_empty() {
-            if self.cone_active[index] {
-                self.remove_cone(index);
-                self.cone_active[index] = false;
-            }
-            self.extend_active_cone_window();
-        }
     }
 
-    fn extend_active_cone_window(&mut self) {
-        if self.lowest_unreached_z >= self.grid.dims[2] {
-            return;
+    fn cone_clear(&self, candidate: usize) -> bool {
+        if self.cone_slices.is_empty() {
+            return true;
         }
 
-        let target_max_z =
-            (self.lowest_unreached_z + self.cone_max_dz).min(self.grid.dims[2].saturating_sub(1));
-        if self
-            .active_cone_max_z
-            .is_some_and(|active_max_z| target_max_z <= active_max_z)
-        {
-            return;
-        }
+        let [candidate_x, candidate_y, candidate_z] = grid_coords(candidate, self.grid);
+        for slice in &self.cone_slices {
+            if candidate_z < slice.dz {
+                continue;
+            }
 
-        let start_z = self
-            .active_cone_max_z
-            .map_or(self.lowest_unreached_z, |active_max_z| active_max_z + 1);
-        for z in start_z..=target_max_z {
-            for y in 0..self.grid.dims[1] {
-                for x in 0..self.grid.dims[0] {
-                    let index = self.grid.index(x, y, z);
-                    if self.occupancy[index] && self.unreached[index] {
-                        self.add_cone(index);
-                        self.cone_active[index] = true;
-                    }
+            let source_z = candidate_z - slice.dz;
+            for row in &slice.rows {
+                let source_y = candidate_y as isize - row.dy;
+                if source_y < 0 || source_y >= self.grid.dims[1] as isize {
+                    continue;
+                }
+
+                let min_x = candidate_x.saturating_sub(row.dx_max as usize);
+                let max_x =
+                    (candidate_x + row.dx_max as usize).min(self.grid.dims[0].saturating_sub(1));
+                if unreached_bits_any(
+                    &self.unreached_bits,
+                    self.grid,
+                    self.row_words,
+                    min_x,
+                    max_x,
+                    source_y as usize,
+                    source_z,
+                ) {
+                    return false;
                 }
             }
         }
 
-        self.active_cone_max_z = Some(target_max_z);
-    }
-
-    fn add_cone(&mut self, index: usize) {
-        let [x, y, z] = grid_coords(index, self.grid);
-        for offset in &self.cone_offsets {
-            if let Some(target) = offset_index([x, y, z], *offset, self.grid) {
-                self.cone_blocked[target] = self.cone_blocked[target].saturating_add(1);
-            }
-        }
-    }
-
-    fn remove_cone(&mut self, index: usize) {
-        let [x, y, z] = grid_coords(index, self.grid);
-        for offset in &self.cone_offsets {
-            if let Some(target) = offset_index([x, y, z], *offset, self.grid) {
-                self.cone_blocked[target] = self.cone_blocked[target].saturating_sub(1);
-            }
-        }
+        true
     }
 }
 
@@ -638,7 +639,7 @@ fn lowest_non_empty_z(unreached_by_z: &[usize]) -> usize {
         .unwrap_or(unreached_by_z.len())
 }
 
-fn cone_offsets(grid: Grid, constraints: PropagationConstraints) -> Vec<[isize; 3]> {
+fn cone_slices(grid: Grid, constraints: PropagationConstraints) -> Vec<ConeSlice> {
     let Some(angle_degrees) = constraints.unreached_cone_angle_degrees else {
         return Vec::new();
     };
@@ -651,7 +652,7 @@ fn cone_offsets(grid: Grid, constraints: PropagationConstraints) -> Vec<[isize; 
 
     let cone_tan = angle_degrees.to_radians().tan();
     let max_dz = (max_height_mm / grid.voxel_size.z).floor() as isize;
-    let mut offsets = Vec::new();
+    let mut slices = Vec::new();
     for dz in 1..=max_dz {
         let dz_mm = dz as f64 * grid.voxel_size.z;
         if dz_mm > max_height_mm {
@@ -659,37 +660,74 @@ fn cone_offsets(grid: Grid, constraints: PropagationConstraints) -> Vec<[isize; 
         }
 
         let radius_mm = dz_mm * cone_tan;
-        let max_dx = (radius_mm / grid.voxel_size.x).floor() as isize;
         let max_dy = (radius_mm / grid.voxel_size.y).floor() as isize;
+        let mut rows = Vec::new();
         for dy in -max_dy..=max_dy {
-            for dx in -max_dx..=max_dx {
-                let dx_mm = dx as f64 * grid.voxel_size.x;
-                let dy_mm = dy as f64 * grid.voxel_size.y;
-                if dx_mm.hypot(dy_mm) <= radius_mm {
-                    offsets.push([dx, dy, dz]);
-                }
+            let dy_mm = dy as f64 * grid.voxel_size.y;
+            let remaining_radius_sq = radius_mm * radius_mm - dy_mm * dy_mm;
+            if remaining_radius_sq < 0.0 {
+                continue;
             }
+
+            let dx_max = (remaining_radius_sq.sqrt() / grid.voxel_size.x).floor() as isize;
+            rows.push(ConeRow { dy, dx_max });
+        }
+        slices.push(ConeSlice {
+            dz: dz as usize,
+            rows,
+        });
+    }
+
+    slices
+}
+
+fn set_unreached_bit(bits: &mut [u64], grid: Grid, row_words: usize, x: usize, y: usize, z: usize) {
+    let word = bit_word_index(grid, row_words, x, y, z);
+    bits[word] |= 1u64 << (x % u64::BITS as usize);
+}
+
+fn clear_unreached_bit(
+    bits: &mut [u64],
+    grid: Grid,
+    row_words: usize,
+    x: usize,
+    y: usize,
+    z: usize,
+) {
+    let word = bit_word_index(grid, row_words, x, y, z);
+    bits[word] &= !(1u64 << (x % u64::BITS as usize));
+}
+
+fn unreached_bits_any(
+    bits: &[u64],
+    grid: Grid,
+    row_words: usize,
+    min_x: usize,
+    max_x: usize,
+    y: usize,
+    z: usize,
+) -> bool {
+    let start_word = min_x / u64::BITS as usize;
+    let end_word = max_x / u64::BITS as usize;
+    for word_offset in start_word..=end_word {
+        let row_word = (z * grid.dims[1] + y) * row_words + word_offset;
+        let mut mask = u64::MAX;
+        if word_offset == start_word {
+            mask &= u64::MAX << (min_x % u64::BITS as usize);
+        }
+        if word_offset == end_word {
+            mask &= u64::MAX >> (u64::BITS as usize - 1 - max_x % u64::BITS as usize);
+        }
+        if bits[row_word] & mask != 0 {
+            return true;
         }
     }
 
-    offsets
+    false
 }
 
-fn offset_index(from: [usize; 3], offset: [isize; 3], grid: Grid) -> Option<usize> {
-    let x = from[0] as isize + offset[0];
-    let y = from[1] as isize + offset[1];
-    let z = from[2] as isize + offset[2];
-    if x < 0
-        || y < 0
-        || z < 0
-        || x >= grid.dims[0] as isize
-        || y >= grid.dims[1] as isize
-        || z >= grid.dims[2] as isize
-    {
-        return None;
-    }
-
-    Some(grid.index(x as usize, y as usize, z as usize))
+fn bit_word_index(grid: Grid, row_words: usize, x: usize, y: usize, z: usize) -> usize {
+    (z * grid.dims[1] + y) * row_words + x / u64::BITS as usize
 }
 
 fn occupied_components(occupancy: &[u8], grid: Grid) -> Vec<usize> {
