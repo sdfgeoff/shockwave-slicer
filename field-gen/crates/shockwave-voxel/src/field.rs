@@ -14,6 +14,7 @@ pub struct Field {
 pub struct PropagationConstraints {
     pub max_unreached_below_mm: Option<f64>,
     pub unreached_cone_angle_degrees: Option<f64>,
+    pub unreached_cone_max_height_mm: Option<f64>,
 }
 
 pub trait PropagationMethod {
@@ -434,6 +435,12 @@ fn constraints_allow_candidate(
         }
 
         if let Some(cone_tan) = cone_tan {
+            if let Some(max_cone_height_mm) = constraints.unreached_cone_max_height_mm
+                && dz_mm > max_cone_height_mm
+            {
+                continue;
+            }
+
             let dx_mm = (candidate_x as isize - x as isize) as f64 * grid.voxel_size.x;
             let dy_mm = (candidate_y as isize - y as isize) as f64 * grid.voxel_size.y;
             let radial_mm = dx_mm.hypot(dy_mm);
@@ -761,6 +768,7 @@ mod tests {
             PropagationConstraints {
                 max_unreached_below_mm: Some(0.5),
                 unreached_cone_angle_degrees: None,
+                unreached_cone_max_height_mm: None,
             },
         )
         .unwrap();
@@ -807,11 +815,33 @@ mod tests {
             PropagationConstraints {
                 max_unreached_below_mm: None,
                 unreached_cone_angle_degrees: Some(45.0),
+                unreached_cone_max_height_mm: None,
             },
         )
         .unwrap();
 
         assert_eq!(field.distances[grid.index(1, 0, 1)], 2.0);
         assert_eq!(field.distances[grid.index(1, 0, 2)], 2.0);
+    }
+
+    #[test]
+    fn cone_constraint_is_capped_by_unreached_below_height() {
+        let grid = grid([2, 1, 4]);
+        let mut occupancy = vec![0; grid.voxel_count()];
+        occupancy[grid.index(0, 0, 0)] = 255;
+        occupancy[grid.index(1, 0, 3)] = 255;
+        let reached = vec![false; grid.voxel_count()];
+
+        assert!(constraints_allow_candidate(
+            &occupancy,
+            grid,
+            grid.index(1, 0, 3),
+            &reached,
+            PropagationConstraints {
+                max_unreached_below_mm: None,
+                unreached_cone_angle_degrees: Some(80.0),
+                unreached_cone_max_height_mm: Some(1.0),
+            },
+        ));
     }
 }

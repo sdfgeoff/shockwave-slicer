@@ -117,6 +117,7 @@ fn propagate_and_expand(
         PropagationConstraints {
             max_unreached_below_mm: Some(config.max_unreached_below_mm),
             unreached_cone_angle_degrees: Some(config.unreached_cone_angle_degrees),
+            unreached_cone_max_height_mm: Some(config.max_unreached_below_mm),
         },
     )?;
     log_timing("propagate field", propagation_start.elapsed());
