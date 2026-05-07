@@ -22,6 +22,7 @@ pub struct PropagationConstraints {
 
 pub trait PropagationProgress {
     fn update(&mut self, reached: usize, total: usize);
+    fn fallback_seed(&mut self, x: usize, y: usize, z: usize, distance: f64);
     fn finish(&mut self, reached: usize, total: usize);
 }
 
@@ -284,7 +285,9 @@ pub fn propagate_field_with_progress(
     let components = occupied_components(occupancy, grid);
     let mut constraint_state = ConstraintState::new(occupancy, grid, constraints);
     let mut queue = BinaryHeap::new();
-    let mut deferred = Vec::new();
+    let mut deferred: Vec<QueueEntry> = Vec::new();
+    let mut forced_seeds = vec![false; occupancy.len()];
+    let mut fallback_seed_layers = vec![false; grid.dims[2]];
     let mut current_distance = 0.0;
     let mut reached_count = 0usize;
     let mut last_empty_retry_reached = None;
@@ -303,7 +306,61 @@ pub fn propagate_field_with_progress(
                 break;
             }
             if last_empty_retry_reached == Some(reached_count) {
-                break;
+                deferred.retain(|entry| {
+                    !reached[entry.index] && entry.distance <= distances[entry.index]
+                });
+                let Some(entry) = deferred.iter().copied().min_by(|a, b| {
+                    a.distance
+                        .total_cmp(&b.distance)
+                        .then_with(|| a.index.cmp(&b.index))
+                }) else {
+                    break;
+                };
+
+                if let Some(seed_index) = constraint_state.blocking_cone_seed(entry.index) {
+                    if !reached[seed_index] {
+                        let seed_distance = current_distance;
+                        distances[seed_index] = seed_distance;
+                        forced_seeds[seed_index] = true;
+                        queue.push(QueueEntry {
+                            index: seed_index,
+                            distance: seed_distance,
+                        });
+
+                        let [x, y, z] = grid_coords(seed_index, grid);
+                        if !fallback_seed_layers[z] {
+                            fallback_seed_layers[z] = true;
+                            progress.fallback_seed(x, y, z, seed_distance);
+                        }
+                    }
+                } else {
+                    let seed_distance = entry.distance.max(current_distance);
+                    let [x, y, z] = grid_coords(entry.index, grid);
+                    let target_z = z;
+                    if !fallback_seed_layers[z] {
+                        fallback_seed_layers[z] = true;
+                        progress.fallback_seed(x, y, z, seed_distance);
+                    }
+
+                    let mut index = 0;
+                    while index < deferred.len() {
+                        let entry = deferred[index];
+                        if grid_coords(entry.index, grid)[2] != target_z {
+                            index += 1;
+                            continue;
+                        }
+
+                        deferred.swap_remove(index);
+                        distances[entry.index] = seed_distance;
+                        forced_seeds[entry.index] = true;
+                        queue.push(QueueEntry {
+                            index: entry.index,
+                            distance: seed_distance,
+                        });
+                    }
+                }
+                last_empty_retry_reached = None;
+                continue;
             }
 
             last_empty_retry_reached = Some(reached_count);
@@ -320,10 +377,12 @@ pub fn propagate_field_with_progress(
         if reached[entry.index] {
             continue;
         }
-        if !constraint_state.candidate_allowed(entry.index) {
+        let is_forced_seed = forced_seeds[entry.index];
+        if !is_forced_seed && !constraint_state.candidate_allowed(entry.index) {
             deferred.push(entry);
             continue;
         }
+        forced_seeds[entry.index] = false;
 
         let entry_distance = entry.distance.max(current_distance);
         distances[entry.index] = entry_distance;
@@ -415,6 +474,13 @@ impl PropagationProgress for StderrProgress {
         }
     }
 
+    fn fallback_seed(&mut self, x: usize, y: usize, z: usize, distance: f64) {
+        eprintln!(
+            "{}: fallback seed at voxel ({}, {}, {}), distance {:.6}",
+            self.label, x, y, z, distance
+        );
+    }
+
     fn finish(&mut self, reached: usize, total: usize) {
         if total == 0 {
             eprintln!("{}: complete (0 / 0)", self.label);
@@ -435,6 +501,7 @@ struct NoProgress;
 
 impl PropagationProgress for NoProgress {
     fn update(&mut self, _reached: usize, _total: usize) {}
+    fn fallback_seed(&mut self, _x: usize, _y: usize, _z: usize, _distance: f64) {}
     fn finish(&mut self, _reached: usize, _total: usize) {}
 }
 
@@ -599,8 +666,12 @@ impl ConstraintState {
     }
 
     fn cone_clear(&self, candidate: usize) -> bool {
+        self.blocking_cone_seed(candidate).is_none()
+    }
+
+    fn blocking_cone_seed(&self, candidate: usize) -> Option<usize> {
         if self.cone_slices.is_empty() {
-            return true;
+            return None;
         }
 
         let [candidate_x, candidate_y, candidate_z] = grid_coords(candidate, self.grid);
@@ -619,7 +690,7 @@ impl ConstraintState {
                 let min_x = candidate_x.saturating_sub(row.dx_max as usize);
                 let max_x =
                     (candidate_x + row.dx_max as usize).min(self.grid.dims[0].saturating_sub(1));
-                if unreached_bits_any(
+                if let Some(source_x) = first_unreached_bit(
                     &self.unreached_bits,
                     self.grid,
                     self.row_words,
@@ -628,12 +699,12 @@ impl ConstraintState {
                     source_y as usize,
                     source_z,
                 ) {
-                    return false;
+                    return Some(self.grid.index(source_x, source_y as usize, source_z));
                 }
             }
         }
 
-        true
+        None
     }
 }
 
@@ -703,7 +774,7 @@ fn clear_unreached_bit(
     bits[word] &= !(1u64 << (x % u64::BITS as usize));
 }
 
-fn unreached_bits_any(
+fn first_unreached_bit(
     bits: &[u64],
     grid: Grid,
     row_words: usize,
@@ -711,7 +782,7 @@ fn unreached_bits_any(
     max_x: usize,
     y: usize,
     z: usize,
-) -> bool {
+) -> Option<usize> {
     let start_word = min_x / u64::BITS as usize;
     let end_word = max_x / u64::BITS as usize;
     for word_offset in start_word..=end_word {
@@ -723,12 +794,13 @@ fn unreached_bits_any(
         if word_offset == end_word {
             mask &= u64::MAX >> (u64::BITS as usize - 1 - max_x % u64::BITS as usize);
         }
-        if bits[row_word] & mask != 0 {
-            return true;
+        let matches = bits[row_word] & mask;
+        if matches != 0 {
+            return Some(word_offset * u64::BITS as usize + matches.trailing_zeros() as usize);
         }
     }
 
-    false
+    None
 }
 
 fn bit_word_index(grid: Grid, row_words: usize, x: usize, y: usize, z: usize) -> usize {
@@ -1037,6 +1109,86 @@ mod tests {
     }
 
     #[test]
+    fn deferred_constraint_deadlock_promotes_fallback_seed() {
+        let grid = grid([1, 1, 3]);
+        let mut occupancy = vec![0; grid.voxel_count()];
+        occupancy[grid.index(0, 0, 0)] = 255;
+        occupancy[grid.index(0, 0, 1)] = 255;
+        occupancy[grid.index(0, 0, 2)] = 255;
+        let propagation = ExplicitKernelPropagation::new(
+            vec![
+                KernelMove {
+                    offset: [0, 0, 2],
+                    cost: 1.0,
+                },
+                KernelMove {
+                    offset: [0, 0, -1],
+                    cost: 1.0,
+                },
+            ],
+            KernelPathCheck::EndpointOccupied,
+        )
+        .unwrap();
+        let mut progress = RecordingProgress::default();
+
+        let field = propagate_field_with_progress(
+            &occupancy,
+            grid,
+            &propagation,
+            PropagationConstraints {
+                max_unreached_below_mm: Some(0.5),
+                unreached_cone_angle_degrees: None,
+                unreached_cone_max_height_mm: None,
+            },
+            &mut progress,
+        )
+        .unwrap();
+
+        assert_eq!(field.distances[grid.index(0, 0, 0)], 0.0);
+        assert_eq!(field.distances[grid.index(0, 0, 2)], 1.0);
+        assert_eq!(field.distances[grid.index(0, 0, 1)], 2.0);
+        assert_eq!(progress.fallback_seeds, vec![(0, 0, 2)]);
+    }
+
+    #[test]
+    fn cone_deadlock_fallback_seeds_blocking_cone_apex() {
+        let grid = grid([2, 1, 3]);
+        let mut occupancy = vec![0; grid.voxel_count()];
+        occupancy[grid.index(0, 0, 0)] = 255;
+        occupancy[grid.index(0, 0, 1)] = 255;
+        occupancy[grid.index(1, 0, 1)] = 255;
+        occupancy[grid.index(0, 0, 2)] = 255;
+        let propagation = ExplicitKernelPropagation::new(
+            vec![KernelMove {
+                offset: [0, 0, 1],
+                cost: 1.0,
+            }],
+            KernelPathCheck::EndpointOccupied,
+        )
+        .unwrap();
+        let mut progress = RecordingProgress::default();
+
+        let field = propagate_field_with_progress(
+            &occupancy,
+            grid,
+            &propagation,
+            PropagationConstraints {
+                max_unreached_below_mm: None,
+                unreached_cone_angle_degrees: Some(60.0),
+                unreached_cone_max_height_mm: None,
+            },
+            &mut progress,
+        )
+        .unwrap();
+
+        assert_eq!(field.distances[grid.index(0, 0, 0)], 0.0);
+        assert_eq!(field.distances[grid.index(0, 0, 1)], 1.0);
+        assert_eq!(field.distances[grid.index(0, 0, 2)], 2.0);
+        assert_eq!(field.distances[grid.index(1, 0, 1)], 1.0);
+        assert_eq!(progress.fallback_seeds, vec![(1, 0, 1)]);
+    }
+
+    #[test]
     fn height_constraint_delays_voxels_above_unreached_material() {
         let grid = grid([2, 1, 3]);
         let mut occupancy = vec![0; grid.voxel_count()];
@@ -1147,5 +1299,20 @@ mod tests {
         );
 
         assert!(state.candidate_allowed(grid.index(1, 0, 3)));
+    }
+
+    #[derive(Default)]
+    struct RecordingProgress {
+        fallback_seeds: Vec<(usize, usize, usize)>,
+    }
+
+    impl PropagationProgress for RecordingProgress {
+        fn update(&mut self, _reached: usize, _total: usize) {}
+
+        fn fallback_seed(&mut self, x: usize, y: usize, z: usize, _distance: f64) {
+            self.fallback_seeds.push((x, y, z));
+        }
+
+        fn finish(&mut self, _reached: usize, _total: usize) {}
     }
 }
