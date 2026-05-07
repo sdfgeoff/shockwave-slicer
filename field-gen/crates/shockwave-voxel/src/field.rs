@@ -279,6 +279,7 @@ pub fn propagate_field_with_progress(
     let mut distances = vec![f64::INFINITY; occupancy.len()];
     let mut reached = vec![false; occupancy.len()];
     let components = occupied_components(occupancy, grid);
+    let mut constraint_state = ConstraintState::new(occupancy, grid, constraints);
     let mut queue = BinaryHeap::new();
     let mut deferred = Vec::new();
     let mut current_distance = 0.0;
@@ -300,7 +301,7 @@ pub fn propagate_field_with_progress(
         if reached[entry.index] {
             continue;
         }
-        if !constraints_allow_candidate(occupancy, grid, entry.index, &reached, constraints) {
+        if !constraint_state.candidate_allowed(entry.index) {
             deferred.push(entry);
             continue;
         }
@@ -309,6 +310,7 @@ pub fn propagate_field_with_progress(
         distances[entry.index] = entry_distance;
         current_distance = entry_distance;
         reached[entry.index] = true;
+        constraint_state.mark_reached(entry.index);
         reached_count += 1;
         progress.update(reached_count, total_occupied);
         queue.extend(deferred.drain(..));
@@ -487,59 +489,152 @@ fn swept_offsets_are_occupied(
     true
 }
 
-fn constraints_allow_candidate(
-    occupancy: &[u8],
+struct ConstraintState {
     grid: Grid,
-    candidate: usize,
-    reached: &[bool],
     constraints: PropagationConstraints,
-) -> bool {
-    if constraints.max_unreached_below_mm.is_none()
-        && constraints.unreached_cone_angle_degrees.is_none()
-    {
-        return true;
+    unreached_by_z: Vec<usize>,
+    lowest_unreached_z: usize,
+    cone_offsets: Vec<[isize; 3]>,
+    cone_blocked: Vec<u32>,
+}
+
+impl ConstraintState {
+    fn new(occupancy: &[u8], grid: Grid, constraints: PropagationConstraints) -> Self {
+        let mut unreached_by_z = vec![0usize; grid.dims[2]];
+        for (index, occupied) in occupancy.iter().copied().enumerate() {
+            if occupied != 0 {
+                unreached_by_z[grid_coords(index, grid)[2]] += 1;
+            }
+        }
+
+        let cone_offsets = cone_offsets(grid, constraints);
+        let mut state = Self {
+            grid,
+            constraints,
+            lowest_unreached_z: lowest_non_empty_z(&unreached_by_z),
+            unreached_by_z,
+            cone_offsets,
+            cone_blocked: vec![0; occupancy.len()],
+        };
+
+        if !state.cone_offsets.is_empty() {
+            for (index, occupied) in occupancy.iter().copied().enumerate() {
+                if occupied != 0 {
+                    state.add_cone(index);
+                }
+            }
+        }
+
+        state
     }
 
-    let [candidate_x, candidate_y, candidate_z] = grid_coords(candidate, grid);
-    let candidate_z_mm = candidate_z as f64 * grid.voxel_size.z;
-    let cone_tan = constraints
-        .unreached_cone_angle_degrees
-        .map(|angle| angle.to_radians().tan());
-
-    for (index, occupied) in occupancy.iter().copied().enumerate() {
-        if occupied == 0 || reached[index] || index == candidate {
-            continue;
-        }
-
-        let [x, y, z] = grid_coords(index, grid);
-        let dz_mm = candidate_z_mm - z as f64 * grid.voxel_size.z;
-        if dz_mm <= 0.0 {
-            continue;
-        }
-
-        if let Some(max_unreached_below_mm) = constraints.max_unreached_below_mm
-            && dz_mm > max_unreached_below_mm
+    fn candidate_allowed(&self, candidate: usize) -> bool {
+        if let Some(max_unreached_below_mm) = self.constraints.max_unreached_below_mm
+            && self.lowest_unreached_z < self.grid.dims[2]
         {
-            return false;
-        }
-
-        if let Some(cone_tan) = cone_tan {
-            if let Some(max_cone_height_mm) = constraints.unreached_cone_max_height_mm
-                && dz_mm > max_cone_height_mm
-            {
-                continue;
-            }
-
-            let dx_mm = (candidate_x as isize - x as isize) as f64 * grid.voxel_size.x;
-            let dy_mm = (candidate_y as isize - y as isize) as f64 * grid.voxel_size.y;
-            let radial_mm = dx_mm.hypot(dy_mm);
-            if radial_mm <= dz_mm * cone_tan {
+            let candidate_z = grid_coords(candidate, self.grid)[2];
+            let dz_mm =
+                candidate_z.saturating_sub(self.lowest_unreached_z) as f64 * self.grid.voxel_size.z;
+            if dz_mm > max_unreached_below_mm {
                 return false;
             }
         }
+
+        self.cone_blocked[candidate] == 0
     }
 
-    true
+    fn mark_reached(&mut self, index: usize) {
+        let z = grid_coords(index, self.grid)[2];
+        self.unreached_by_z[z] = self.unreached_by_z[z].saturating_sub(1);
+        while self.lowest_unreached_z < self.unreached_by_z.len()
+            && self.unreached_by_z[self.lowest_unreached_z] == 0
+        {
+            self.lowest_unreached_z += 1;
+        }
+
+        if !self.cone_offsets.is_empty() {
+            self.remove_cone(index);
+        }
+    }
+
+    fn add_cone(&mut self, index: usize) {
+        let [x, y, z] = grid_coords(index, self.grid);
+        for offset in &self.cone_offsets {
+            if let Some(target) = offset_index([x, y, z], *offset, self.grid) {
+                self.cone_blocked[target] = self.cone_blocked[target].saturating_add(1);
+            }
+        }
+    }
+
+    fn remove_cone(&mut self, index: usize) {
+        let [x, y, z] = grid_coords(index, self.grid);
+        for offset in &self.cone_offsets {
+            if let Some(target) = offset_index([x, y, z], *offset, self.grid) {
+                self.cone_blocked[target] = self.cone_blocked[target].saturating_sub(1);
+            }
+        }
+    }
+}
+
+fn lowest_non_empty_z(unreached_by_z: &[usize]) -> usize {
+    unreached_by_z
+        .iter()
+        .position(|count| *count != 0)
+        .unwrap_or(unreached_by_z.len())
+}
+
+fn cone_offsets(grid: Grid, constraints: PropagationConstraints) -> Vec<[isize; 3]> {
+    let Some(angle_degrees) = constraints.unreached_cone_angle_degrees else {
+        return Vec::new();
+    };
+    let max_height_mm = constraints
+        .unreached_cone_max_height_mm
+        .unwrap_or(grid.actual_size.z);
+    if max_height_mm <= 0.0 {
+        return Vec::new();
+    }
+
+    let cone_tan = angle_degrees.to_radians().tan();
+    let max_dz = (max_height_mm / grid.voxel_size.z).floor() as isize;
+    let mut offsets = Vec::new();
+    for dz in 1..=max_dz {
+        let dz_mm = dz as f64 * grid.voxel_size.z;
+        if dz_mm > max_height_mm {
+            continue;
+        }
+
+        let radius_mm = dz_mm * cone_tan;
+        let max_dx = (radius_mm / grid.voxel_size.x).floor() as isize;
+        let max_dy = (radius_mm / grid.voxel_size.y).floor() as isize;
+        for dy in -max_dy..=max_dy {
+            for dx in -max_dx..=max_dx {
+                let dx_mm = dx as f64 * grid.voxel_size.x;
+                let dy_mm = dy as f64 * grid.voxel_size.y;
+                if dx_mm.hypot(dy_mm) <= radius_mm {
+                    offsets.push([dx, dy, dz]);
+                }
+            }
+        }
+    }
+
+    offsets
+}
+
+fn offset_index(from: [usize; 3], offset: [isize; 3], grid: Grid) -> Option<usize> {
+    let x = from[0] as isize + offset[0];
+    let y = from[1] as isize + offset[1];
+    let z = from[2] as isize + offset[2];
+    if x < 0
+        || y < 0
+        || z < 0
+        || x >= grid.dims[0] as isize
+        || y >= grid.dims[1] as isize
+        || z >= grid.dims[2] as isize
+    {
+        return None;
+    }
+
+    Some(grid.index(x as usize, y as usize, z as usize))
 }
 
 fn occupied_components(occupancy: &[u8], grid: Grid) -> Vec<usize> {
@@ -919,18 +1014,16 @@ mod tests {
         let mut occupancy = vec![0; grid.voxel_count()];
         occupancy[grid.index(0, 0, 0)] = 255;
         occupancy[grid.index(1, 0, 3)] = 255;
-        let reached = vec![false; grid.voxel_count()];
-
-        assert!(constraints_allow_candidate(
+        let state = ConstraintState::new(
             &occupancy,
             grid,
-            grid.index(1, 0, 3),
-            &reached,
             PropagationConstraints {
                 max_unreached_below_mm: None,
                 unreached_cone_angle_degrees: Some(80.0),
                 unreached_cone_max_height_mm: Some(1.0),
             },
-        ));
+        );
+
+        assert!(state.candidate_allowed(grid.index(1, 0, 3)));
     }
 }
