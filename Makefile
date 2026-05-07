@@ -14,7 +14,7 @@ FIELD_RATE_X ?= 3.7
 FIELD_RATE_Y ?= 3.7
 FIELD_RATE_Z ?= 1
 KERNEL ?= $(INPUT_DIR)/trapezoid-kernel.json
-ISO_SPACING ?= 0.25
+ISO_SPACING ?= 1.0
 
 VOXEL_GEN := field-gen/target/release/field-gen
 FIELD_GEN_SOURCES := $(shell find field-gen/crates -type f 2>/dev/null)
