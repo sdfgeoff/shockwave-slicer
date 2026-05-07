@@ -276,6 +276,7 @@ pub fn propagate_field_with_progress(
     }
 
     let total_occupied = occupancy.iter().filter(|value| **value != 0).count();
+    progress.update(0, total_occupied);
     let mut distances = vec![f64::INFINITY; occupancy.len()];
     let mut reached = vec![false; occupancy.len()];
     let components = occupied_components(occupancy, grid);
@@ -284,7 +285,6 @@ pub fn propagate_field_with_progress(
     let mut deferred = Vec::new();
     let mut current_distance = 0.0;
     let mut reached_count = 0usize;
-    progress.update(reached_count, total_occupied);
 
     for seed in method.seeds(occupancy, grid) {
         distances[seed] = 0.0;
@@ -492,37 +492,51 @@ fn swept_offsets_are_occupied(
 struct ConstraintState {
     grid: Grid,
     constraints: PropagationConstraints,
+    occupancy: Vec<bool>,
+    unreached: Vec<bool>,
+    cone_active: Vec<bool>,
     unreached_by_z: Vec<usize>,
     lowest_unreached_z: usize,
+    active_cone_max_z: Option<usize>,
+    cone_max_dz: usize,
     cone_offsets: Vec<[isize; 3]>,
     cone_blocked: Vec<u32>,
 }
 
 impl ConstraintState {
     fn new(occupancy: &[u8], grid: Grid, constraints: PropagationConstraints) -> Self {
+        let mut occupancy_mask = vec![false; occupancy.len()];
         let mut unreached_by_z = vec![0usize; grid.dims[2]];
         for (index, occupied) in occupancy.iter().copied().enumerate() {
             if occupied != 0 {
+                occupancy_mask[index] = true;
                 unreached_by_z[grid_coords(index, grid)[2]] += 1;
             }
         }
 
         let cone_offsets = cone_offsets(grid, constraints);
+        let cone_max_dz = cone_offsets
+            .iter()
+            .map(|offset| offset[2] as usize)
+            .max()
+            .unwrap_or(0);
+        let lowest_unreached_z = lowest_non_empty_z(&unreached_by_z);
         let mut state = Self {
             grid,
             constraints,
-            lowest_unreached_z: lowest_non_empty_z(&unreached_by_z),
+            occupancy: occupancy_mask.clone(),
+            unreached: occupancy_mask,
+            cone_active: vec![false; occupancy.len()],
+            lowest_unreached_z,
+            active_cone_max_z: None,
+            cone_max_dz,
             unreached_by_z,
             cone_offsets,
             cone_blocked: vec![0; occupancy.len()],
         };
 
         if !state.cone_offsets.is_empty() {
-            for (index, occupied) in occupancy.iter().copied().enumerate() {
-                if occupied != 0 {
-                    state.add_cone(index);
-                }
-            }
+            state.extend_active_cone_window();
         }
 
         state
@@ -544,6 +558,11 @@ impl ConstraintState {
     }
 
     fn mark_reached(&mut self, index: usize) {
+        if !self.unreached[index] {
+            return;
+        }
+
+        self.unreached[index] = false;
         let z = grid_coords(index, self.grid)[2];
         self.unreached_by_z[z] = self.unreached_by_z[z].saturating_sub(1);
         while self.lowest_unreached_z < self.unreached_by_z.len()
@@ -553,8 +572,44 @@ impl ConstraintState {
         }
 
         if !self.cone_offsets.is_empty() {
-            self.remove_cone(index);
+            if self.cone_active[index] {
+                self.remove_cone(index);
+                self.cone_active[index] = false;
+            }
+            self.extend_active_cone_window();
         }
+    }
+
+    fn extend_active_cone_window(&mut self) {
+        if self.lowest_unreached_z >= self.grid.dims[2] {
+            return;
+        }
+
+        let target_max_z =
+            (self.lowest_unreached_z + self.cone_max_dz).min(self.grid.dims[2].saturating_sub(1));
+        if self
+            .active_cone_max_z
+            .is_some_and(|active_max_z| target_max_z <= active_max_z)
+        {
+            return;
+        }
+
+        let start_z = self
+            .active_cone_max_z
+            .map_or(self.lowest_unreached_z, |active_max_z| active_max_z + 1);
+        for z in start_z..=target_max_z {
+            for y in 0..self.grid.dims[1] {
+                for x in 0..self.grid.dims[0] {
+                    let index = self.grid.index(x, y, z);
+                    if self.occupancy[index] && self.unreached[index] {
+                        self.add_cone(index);
+                        self.cone_active[index] = true;
+                    }
+                }
+            }
+        }
+
+        self.active_cone_max_z = Some(target_max_z);
     }
 
     fn add_cone(&mut self, index: usize) {
