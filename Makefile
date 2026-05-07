@@ -13,7 +13,7 @@ FIELD ?= 1
 FIELD_RATE_X ?= 3.7
 FIELD_RATE_Y ?= 3.7
 FIELD_RATE_Z ?= 1
-KERNEL ?= $(INPUT_DIR)/truncated-cone-kernel.json
+KERNEL ?= $(INPUT_DIR)/trapezoid-kernel.json
 ISO_SPACING ?= 0.25
 
 VOXEL_GEN := field-gen/target/release/field-gen

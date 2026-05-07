@@ -1,0 +1,28 @@
+{
+  "input": "inputs/truncated-cone-kernel.json",
+  "kernel_name": "truncated-cone-unit",
+  "units": "voxels",
+  "layout": "x-fastest-u8",
+  "image_file": "inputs/truncated-cone-kernel.bmp",
+  "image_format": "bmp-r-field-g-occupancy-slice-atlas",
+  "image_grid": [
+    3,
+    2
+  ],
+  "image_size_px": [
+    21,
+    14
+  ],
+  "dimensions": [
+    7,
+    7,
+    5
+  ],
+  "field_enabled": true,
+  "field_max_distance": 2.0,
+  "channel_layout": {
+    "r": "normalized kernel cost",
+    "g": "active kernel entry mask",
+    "b": "reserved"
+  }
+}
