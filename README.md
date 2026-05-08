@@ -37,6 +37,14 @@ When field generation is enabled, the propagated field is computed through occup
 
 ## Explicit Growth Kernels
 
+`field-gen` can generate a native radial trapezoid SDF kernel from the current voxel size:
+
+```bash
+field-gen input.stl --voxel 0.4 0.4 0.4 --field-method trapezoid --iso-spacing 0.5 --output output/prefix
+```
+
+The native trapezoid method uses the same SDF model as `field-gen/generate_trapezoid_sdf_kernel.py`, but samples it directly for the active voxel size instead of relying on a pre-generated JSON file. This avoids accidentally using a kernel authored for one voxel size at a different physical resolution.
+
 `field-gen` can propagate the field with an explicit JSON kernel:
 
 ```bash
@@ -70,7 +78,7 @@ field-gen input.stl --voxel 1 1 1 --kernel kernel.json \
   --unreached-cone-angle 80
 ```
 
-`--max-unreached-below` prevents a voxel from being reached while any other unreached occupied voxel is more than the configured distance below it. `--unreached-cone-angle` reserves an upward cone above every unreached occupied voxel until that voxel is reached. The angle is measured from vertical; the default is `80` degrees.
+`--max-unreached-below` prevents a voxel from being reached while any other unreached occupied voxel is more than the configured distance below it. `--unreached-cone-angle` reserves an upward cone above every unreached occupied voxel until that voxel is reached. The angle is measured from vertical; the default is `80` degrees. Use `--unreached-cone-angle 0` to disable the cone constraint.
 
 ## Metadata
 
@@ -83,7 +91,7 @@ origin_mm: grid origin in STL/model coordinates
 image_grid: [columns, rows] atlas cell grid
 image_size_px: atlas pixel size
 field_enabled: whether R contains a propagated field
-field_method: anisotropic or explicit-kernel
+field_method: anisotropic, trapezoid, or explicit-kernel
 kernel_file: source JSON kernel when field_method is explicit-kernel
 field_rate: anisotropic propagation rates used by field-gen
 max_unreached_below_mm: propagation height clearance limit

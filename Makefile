@@ -8,12 +8,13 @@ VOXEL_Z ?= 0.4
 SIZE_X ?= 256
 SIZE_Y ?= 256
 SIZE_Z ?= 256
-PADDING_VOXELS ?= 3
+PADDING_VOXELS ?= 1
 FIELD ?= 1
+FIELD_METHOD ?= trapezoid
 FIELD_RATE_X ?= 3.7
 FIELD_RATE_Y ?= 3.7
 FIELD_RATE_Z ?= 1
-KERNEL ?= $(INPUT_DIR)/trapezoid-kernel.json
+KERNEL ?=
 MAX_UNREACHED_BELOW ?= 5
 UNREACHED_CONE_ANGLE ?= 80
 ISO_SPACING ?= 1.0
@@ -36,8 +37,10 @@ voxels: $(VOXEL_GEN)
 	if [ "$(FIELD)" != "0" ]; then \
 		if [ -n "$(KERNEL)" ]; then \
 			field_args="--kernel $(KERNEL) --max-unreached-below $(MAX_UNREACHED_BELOW) --unreached-cone-angle $(UNREACHED_CONE_ANGLE)"; \
+		elif [ "$(FIELD_METHOD)" = "anisotropic" ]; then \
+			field_args="--field --field-method $(FIELD_METHOD) --field-rate $(FIELD_RATE_X) $(FIELD_RATE_Y) $(FIELD_RATE_Z) --max-unreached-below $(MAX_UNREACHED_BELOW) --unreached-cone-angle $(UNREACHED_CONE_ANGLE)"; \
 		else \
-			field_args="--field --field-rate $(FIELD_RATE_X) $(FIELD_RATE_Y) $(FIELD_RATE_Z) --max-unreached-below $(MAX_UNREACHED_BELOW) --unreached-cone-angle $(UNREACHED_CONE_ANGLE)"; \
+			field_args="--field --field-method $(FIELD_METHOD) --max-unreached-below $(MAX_UNREACHED_BELOW) --unreached-cone-angle $(UNREACHED_CONE_ANGLE)"; \
 		fi; \
 	fi; \
 	for stl in "$(INPUT_DIR)"/*.stl "$(INPUT_DIR)"/*.STL; do \

@@ -2,6 +2,21 @@ use std::path::PathBuf;
 
 use shockwave_core::geometry::Vec3;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FieldMethod {
+    Anisotropic,
+    Trapezoid,
+}
+
+impl FieldMethod {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Anisotropic => "anisotropic",
+            Self::Trapezoid => "trapezoid",
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Config {
     pub input: PathBuf,
@@ -11,6 +26,7 @@ pub struct Config {
     pub padding_voxels: usize,
     pub origin: Option<Vec3>,
     pub field_enabled: bool,
+    pub field_method: FieldMethod,
     pub field_rate: Vec3,
     pub kernel_path: Option<PathBuf>,
     pub max_unreached_below_mm: f64,
@@ -30,6 +46,7 @@ pub fn parse_args(args: Vec<String>) -> Result<Config, String> {
     let mut padding_voxels = 3;
     let mut origin = None;
     let mut field_enabled = false;
+    let mut field_method = FieldMethod::Anisotropic;
     let mut field_rate = Vec3 {
         x: 1.0,
         y: 1.0,
@@ -65,6 +82,11 @@ pub fn parse_args(args: Vec<String>) -> Result<Config, String> {
             }
             "--field-rate" => {
                 field_rate = parse_vec3_flag("--field-rate", &args, &mut index)?;
+            }
+            "--field-method" => {
+                index += 1;
+                field_method = parse_field_method(&args, index)?;
+                field_enabled = true;
             }
             "--kernel" => {
                 index += 1;
@@ -125,12 +147,27 @@ pub fn parse_args(args: Vec<String>) -> Result<Config, String> {
         padding_voxels,
         origin,
         field_enabled,
+        field_method,
         field_rate,
         kernel_path,
         max_unreached_below_mm,
         unreached_cone_angle_degrees,
         iso_spacing,
     })
+}
+
+fn parse_field_method(args: &[String], index: usize) -> Result<FieldMethod, String> {
+    match args
+        .get(index)
+        .ok_or_else(|| "--field-method requires a method name".to_string())?
+        .as_str()
+    {
+        "anisotropic" => Ok(FieldMethod::Anisotropic),
+        "trapezoid" => Ok(FieldMethod::Trapezoid),
+        value => Err(format!(
+            "--field-method must be `anisotropic` or `trapezoid`, got `{value}`"
+        )),
+    }
 }
 
 fn parse_vec3_flag(flag: &str, args: &[String], index: &mut usize) -> Result<Vec3, String> {
@@ -187,14 +224,15 @@ fn parse_angle_degrees(flag: &str, args: &[String], index: usize) -> Result<f64,
 }
 
 fn usage() -> String {
-    "usage: field-gen <input.stl> --voxel <x-mm> <y-mm> <z-mm> [--size <x-mm> <y-mm> <z-mm>] [--padding-voxels <n>] [--origin <x-mm> <y-mm> <z-mm>] [--field] [--field-rate <x> <y> <z>] [--kernel <kernel.json>] [--max-unreached-below <mm>] [--unreached-cone-angle <degrees>] [--iso-spacing <distance>] [--output <prefix>]\n\
+    "usage: field-gen <input.stl> --voxel <x-mm> <y-mm> <z-mm> [--size <x-mm> <y-mm> <z-mm>] [--padding-voxels <n>] [--origin <x-mm> <y-mm> <z-mm>] [--field] [--field-method <anisotropic|trapezoid>] [--field-rate <x> <y> <z>] [--kernel <kernel.json>] [--max-unreached-below <mm>] [--unreached-cone-angle <degrees>] [--iso-spacing <distance>] [--output <prefix>]\n\
 \n\
 STL coordinates are assumed to be millimeters. If --size is provided, it is treated as a maximum grid size.\n\
 By default, the grid fits the STL bounds plus 3 voxels of padding on each side.\n\
 --field propagates an anisotropic field through occupied voxels from the lowest occupied Z slice.\n\
+--field-method trapezoid generates a native radial trapezoid SDF kernel from the active voxel size.\n\
 --kernel propagates the field using an explicit JSON kernel instead of --field-rate.\n\
 --max-unreached-below defaults to 5mm and prevents reaching high voxels while lower occupied voxels remain unreached.\n\
---unreached-cone-angle defaults to 80 degrees from vertical and reserves access cones above unreached occupied voxels.\n\
+--unreached-cone-angle defaults to 80 degrees from vertical and reserves access cones above unreached occupied voxels. Use 0 to disable this constraint.\n\
 --iso-spacing controls the spacing between exported isosurface levels when --field is enabled.\n\
 Voxel size takes priority: grid dimensions are ceil(size / voxel), so actual size may expand slightly."
         .to_string()

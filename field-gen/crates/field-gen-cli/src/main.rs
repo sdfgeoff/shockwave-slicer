@@ -5,11 +5,11 @@ use std::fs;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-use cli::parse_args;
+use cli::{FieldMethod, parse_args};
 use rayon::prelude::*;
 use serde_json::Value;
 use shockwave_clip::{TriangleSolid, clip_mesh_to_solid};
-use shockwave_core::geometry::{Triangle, mesh_bounds};
+use shockwave_core::geometry::{Triangle, Vec3, mesh_bounds};
 use shockwave_core::grid::{Grid, GridSpec, build_grid};
 use shockwave_iso::{Isosurface, IsosurfaceSet, extract_regular_isosurfaces};
 use shockwave_output::{
@@ -99,8 +99,171 @@ fn propagate_configured_field(
         eprintln!("Loaded kernel with {} moves", propagation.move_count());
         propagate_and_expand(config, occupancy, grid, &propagation)
     } else {
-        let propagation = AnisotropicEuclideanPropagation::new(config.field_rate);
-        propagate_and_expand(config, occupancy, grid, &propagation)
+        match config.field_method {
+            FieldMethod::Anisotropic => {
+                let propagation = AnisotropicEuclideanPropagation::new(config.field_rate);
+                propagate_and_expand(config, occupancy, grid, &propagation)
+            }
+            FieldMethod::Trapezoid => {
+                let load_start = Instant::now();
+                let propagation = trapezoid_propagation(grid)?;
+                log_timing("generate trapezoid kernel", load_start.elapsed());
+                eprintln!(
+                    "Generated native trapezoid kernel with {} moves",
+                    propagation.move_count()
+                );
+                propagate_and_expand(config, occupancy, grid, &propagation)
+            }
+        }
+    }
+}
+
+fn trapezoid_propagation(grid: Grid) -> Result<ExplicitKernelPropagation, String> {
+    let moves = trapezoid_kernel_moves(TrapezoidKernel {
+        voxel_size: grid.voxel_size,
+        r1: 2.0,
+        r2: 0.2,
+        half_height: 0.5,
+        z_offset: 0.5,
+        surface_cost: 1.0,
+        max_cost: 2.0,
+    })?;
+    ExplicitKernelPropagation::new(moves, KernelPathCheck::SweptOccupied)
+}
+
+#[derive(Clone, Copy)]
+struct TrapezoidKernel {
+    voxel_size: Vec3,
+    r1: f64,
+    r2: f64,
+    half_height: f64,
+    z_offset: f64,
+    surface_cost: f64,
+    max_cost: f64,
+}
+
+fn trapezoid_kernel_moves(kernel: TrapezoidKernel) -> Result<Vec<KernelMove>, String> {
+    let outer_margin = kernel.max_cost - kernel.surface_cost;
+    if outer_margin < 0.0 {
+        return Err("trapezoid max cost must be greater than or equal to surface cost".to_string());
+    }
+    let vertical_cost_scale = trapezoid_vertical_cost_scale(kernel)?;
+
+    let max_radius_mm = kernel.r1.max(kernel.r2) + outer_margin;
+    let min_z_mm = -kernel.z_offset - kernel.half_height - outer_margin;
+    let max_z_mm = -kernel.z_offset + kernel.half_height + outer_margin;
+    let radius_x = (max_radius_mm / kernel.voxel_size.x).ceil() as isize;
+    let radius_y = (max_radius_mm / kernel.voxel_size.y).ceil() as isize;
+    let radius_z = (min_z_mm.abs().max(max_z_mm.abs()) / kernel.voxel_size.z).ceil() as isize;
+    let mut moves = Vec::new();
+
+    for dz in -radius_z..=radius_z {
+        for dy in -radius_y..=radius_y {
+            for dx in -radius_x..=radius_x {
+                if dx == 0 && dy == 0 && dz == 0 {
+                    continue;
+                }
+
+                let radial_mm = ((dx as f64 * kernel.voxel_size.x).powi(2)
+                    + (dy as f64 * kernel.voxel_size.y).powi(2))
+                .sqrt();
+                let z_mm = dz as f64 * kernel.voxel_size.z;
+                let sdf = sd_trapezoid(
+                    [radial_mm, z_mm + kernel.z_offset],
+                    kernel.r1,
+                    kernel.r2,
+                    kernel.half_height,
+                );
+                let raw_cost = kernel.surface_cost + sdf;
+                if raw_cost > 0.0 && raw_cost <= kernel.max_cost {
+                    let mut cost = raw_cost / vertical_cost_scale;
+                    if dz > 0 {
+                        cost = cost.max(dz as f64 * kernel.voxel_size.z);
+                    }
+                    moves.push(KernelMove {
+                        offset: [dx, dy, dz],
+                        cost,
+                    });
+                }
+            }
+        }
+    }
+
+    Ok(moves)
+}
+
+fn trapezoid_vertical_cost_scale(kernel: TrapezoidKernel) -> Result<f64, String> {
+    let one_voxel_up_cost = kernel.surface_cost
+        + sd_trapezoid(
+            [0.0, kernel.voxel_size.z + kernel.z_offset],
+            kernel.r1,
+            kernel.r2,
+            kernel.half_height,
+        );
+    if one_voxel_up_cost <= 0.0 || !one_voxel_up_cost.is_finite() {
+        return Err("trapezoid vertical cost scale must be finite and positive".to_string());
+    }
+
+    Ok(one_voxel_up_cost / kernel.voxel_size.z)
+}
+
+fn sd_trapezoid(p: [f64; 2], r1: f64, r2: f64, half_height: f64) -> f64 {
+    let k1 = [r2, half_height];
+    let k2 = [r2 - r1, 2.0 * half_height];
+    let px = p[0].abs();
+    let py = p[1];
+
+    let ca = [
+        (px - if py < 0.0 { r1 } else { r2 }).max(0.0),
+        py.abs() - half_height,
+    ];
+    let k1_minus_p = [k1[0] - px, k1[1] - py];
+    let h = ((k1_minus_p[0] * k2[0] + k1_minus_p[1] * k2[1]) / dot2(k2)).clamp(0.0, 1.0);
+    let cb = [px - k1[0] + k2[0] * h, py - k1[1] + k2[1] * h];
+    let sign = if cb[0] < 0.0 && ca[1] < 0.0 {
+        -1.0
+    } else {
+        1.0
+    };
+    sign * dot2(ca).min(dot2(cb)).sqrt()
+}
+
+fn dot2(v: [f64; 2]) -> f64 {
+    v[0] * v[0] + v[1] * v[1]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn trapezoid_kernel_uses_millimeter_vertical_costs() {
+        let kernel = TrapezoidKernel {
+            voxel_size: Vec3 {
+                x: 0.4,
+                y: 0.4,
+                z: 0.4,
+            },
+            r1: 2.0,
+            r2: 0.2,
+            half_height: 0.5,
+            z_offset: 0.5,
+            surface_cost: 1.0,
+            max_cost: 2.0,
+        };
+        let moves = trapezoid_kernel_moves(kernel).unwrap();
+
+        let one_up = moves
+            .iter()
+            .find(|kernel_move| kernel_move.offset == [0, 0, 1])
+            .unwrap();
+        let two_up = moves
+            .iter()
+            .find(|kernel_move| kernel_move.offset == [0, 0, 2])
+            .unwrap();
+
+        assert!((one_up.cost - 0.4).abs() < 1.0e-9);
+        assert!((two_up.cost - 0.8).abs() < 1.0e-9);
     }
 }
 
@@ -118,7 +281,8 @@ fn propagate_and_expand(
         propagation,
         PropagationConstraints {
             max_unreached_below_mm: Some(config.max_unreached_below_mm),
-            unreached_cone_angle_degrees: Some(config.unreached_cone_angle_degrees),
+            unreached_cone_angle_degrees: (config.unreached_cone_angle_degrees > 0.0)
+                .then_some(config.unreached_cone_angle_degrees),
             unreached_cone_max_height_mm: Some(config.max_unreached_below_mm),
         },
         &mut progress,
@@ -285,7 +449,7 @@ fn write_outputs(
                 field_method: if config.kernel_path.is_some() {
                     "explicit-kernel"
                 } else {
-                    "anisotropic"
+                    config.field_method.name()
                 },
                 kernel_path: config
                     .kernel_path
