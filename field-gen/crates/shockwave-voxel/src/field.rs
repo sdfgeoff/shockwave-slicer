@@ -505,30 +505,15 @@ impl PropagationProgress for NoProgress {
     fn finish(&mut self, _reached: usize, _total: usize) {}
 }
 
-pub fn expand_field(field: &mut Field, grid: Grid, layers: usize, method: &impl PropagationMethod) {
+pub fn expand_field(
+    field: &mut Field,
+    grid: Grid,
+    layers: usize,
+    _method: &impl PropagationMethod,
+) {
     let original_distances = field.distances.clone();
-    for _ in 0..layers {
-        let previous_distances = field.distances.clone();
-        let mut next_distances = previous_distances.clone();
-
-        for (index, distance) in previous_distances.iter().copied().enumerate() {
-            if !distance.is_finite() {
-                continue;
-            }
-
-            method.for_each_neighbor(index, grid, &mut |neighbor, cost| {
-                if original_distances[neighbor].is_finite() {
-                    return;
-                }
-
-                let next_distance = distance + cost;
-                if next_distance < next_distances[neighbor] {
-                    next_distances[neighbor] = next_distance;
-                }
-            });
-        }
-
-        field.distances = next_distances;
+    if layers > 0 {
+        extrapolate_field_boundary(&original_distances, &mut field.distances, grid, layers);
     }
 
     field.max_distance = field
@@ -537,6 +522,177 @@ pub fn expand_field(field: &mut Field, grid: Grid, layers: usize, method: &impl 
         .copied()
         .filter(|value| value.is_finite())
         .fold(0.0, f64::max);
+}
+
+fn extrapolate_field_boundary(
+    original_distances: &[f64],
+    distances: &mut [f64],
+    grid: Grid,
+    layers: usize,
+) {
+    let boundary = field_boundary(original_distances, grid);
+    let gradients = field_boundary_gradients(original_distances, grid, &boundary);
+
+    for z in 0..grid.dims[2] {
+        for y in 0..grid.dims[1] {
+            for x in 0..grid.dims[0] {
+                let index = grid.index(x, y, z);
+                if original_distances[index].is_finite() {
+                    continue;
+                }
+
+                if let Some((boundary_index, boundary_coords)) =
+                    nearest_boundary_voxel(&boundary, grid, [x, y, z], layers)
+                {
+                    let gradient = gradients[boundary_index];
+                    let offset = Vec3 {
+                        x: (x as isize - boundary_coords[0] as isize) as f64 * grid.voxel_size.x,
+                        y: (y as isize - boundary_coords[1] as isize) as f64 * grid.voxel_size.y,
+                        z: (z as isize - boundary_coords[2] as isize) as f64 * grid.voxel_size.z,
+                    };
+                    distances[index] = original_distances[boundary_index]
+                        + gradient.x * offset.x
+                        + gradient.y * offset.y
+                        + gradient.z * offset.z;
+                }
+            }
+        }
+    }
+}
+
+fn field_boundary(original_distances: &[f64], grid: Grid) -> Vec<bool> {
+    let mut boundary = vec![false; original_distances.len()];
+    for (index, distance) in original_distances.iter().copied().enumerate() {
+        if !distance.is_finite() {
+            continue;
+        }
+
+        let mut has_empty_neighbor = false;
+        for_adjacent_voxel(index, grid, &mut |neighbor| {
+            if !original_distances[neighbor].is_finite() {
+                has_empty_neighbor = true;
+            }
+        });
+        if has_empty_neighbor {
+            boundary[index] = true;
+        }
+    }
+
+    boundary
+}
+
+fn field_boundary_gradients(
+    original_distances: &[f64],
+    grid: Grid,
+    boundary: &[bool],
+) -> Vec<Vec3> {
+    let mut gradients = vec![
+        Vec3 {
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
+        original_distances.len()
+    ];
+    for (index, is_boundary) in boundary.iter().copied().enumerate() {
+        if is_boundary {
+            gradients[index] = field_gradient(original_distances, grid, index);
+        }
+    }
+
+    gradients
+}
+
+fn nearest_boundary_voxel(
+    boundary: &[bool],
+    grid: Grid,
+    coords: [usize; 3],
+    layers: usize,
+) -> Option<(usize, [usize; 3])> {
+    let mut nearest = None;
+    let layers = layers as isize;
+
+    for dz in -layers..=layers {
+        for dy in -layers..=layers {
+            for dx in -layers..=layers {
+                let bx = coords[0] as isize + dx;
+                let by = coords[1] as isize + dy;
+                let bz = coords[2] as isize + dz;
+                if bx < 0
+                    || by < 0
+                    || bz < 0
+                    || bx >= grid.dims[0] as isize
+                    || by >= grid.dims[1] as isize
+                    || bz >= grid.dims[2] as isize
+                {
+                    continue;
+                }
+
+                let boundary_coords = [bx as usize, by as usize, bz as usize];
+                let boundary_index =
+                    grid.index(boundary_coords[0], boundary_coords[1], boundary_coords[2]);
+                if !boundary[boundary_index] {
+                    continue;
+                }
+
+                let offset_x = dx as f64 * grid.voxel_size.x;
+                let offset_y = dy as f64 * grid.voxel_size.y;
+                let offset_z = dz as f64 * grid.voxel_size.z;
+                let distance_sq = offset_x * offset_x + offset_y * offset_y + offset_z * offset_z;
+                if nearest
+                    .map(|(_, _, nearest_distance_sq)| distance_sq < nearest_distance_sq)
+                    .unwrap_or(true)
+                {
+                    nearest = Some((boundary_index, boundary_coords, distance_sq));
+                }
+            }
+        }
+    }
+
+    nearest.map(|(index, coords, _)| (index, coords))
+}
+
+fn field_gradient(original_distances: &[f64], grid: Grid, index: usize) -> Vec3 {
+    let coords = grid_coords(index, grid);
+    Vec3 {
+        x: axis_gradient(original_distances, grid, coords, 0),
+        y: axis_gradient(original_distances, grid, coords, 1),
+        z: axis_gradient(original_distances, grid, coords, 2),
+    }
+}
+
+fn axis_gradient(original_distances: &[f64], grid: Grid, coords: [usize; 3], axis: usize) -> f64 {
+    let center = original_distances[grid.index(coords[0], coords[1], coords[2])];
+    let mut minus = coords;
+    let mut plus = coords;
+    let has_minus = coords[axis] > 0;
+    let has_plus = coords[axis] + 1 < grid.dims[axis];
+    if has_minus {
+        minus[axis] -= 1;
+    }
+    if has_plus {
+        plus[axis] += 1;
+    }
+
+    let minus_value = has_minus
+        .then(|| original_distances[grid.index(minus[0], minus[1], minus[2])])
+        .filter(|value| value.is_finite());
+    let plus_value = has_plus
+        .then(|| original_distances[grid.index(plus[0], plus[1], plus[2])])
+        .filter(|value| value.is_finite());
+    let spacing = match axis {
+        0 => grid.voxel_size.x,
+        1 => grid.voxel_size.y,
+        2 => grid.voxel_size.z,
+        _ => unreachable!(),
+    };
+
+    match (minus_value, plus_value) {
+        (Some(minus), Some(plus)) => (plus - minus) / (2.0 * spacing),
+        (Some(minus), None) => (center - minus) / spacing,
+        (None, Some(plus)) => (plus - center) / spacing,
+        (None, None) => 0.0,
+    }
 }
 
 fn grid_coords(index: usize, grid: Grid) -> [usize; 3] {
@@ -864,6 +1020,35 @@ fn for_face_neighbor(index: usize, grid: Grid, visit: &mut impl FnMut(usize)) {
     }
 }
 
+fn for_adjacent_voxel(index: usize, grid: Grid, visit: &mut impl FnMut(usize)) {
+    let [x, y, z] = grid_coords(index, grid);
+
+    for dz in -1..=1 {
+        for dy in -1..=1 {
+            for dx in -1..=1 {
+                if dx == 0 && dy == 0 && dz == 0 {
+                    continue;
+                }
+
+                let nx = x as isize + dx;
+                let ny = y as isize + dy;
+                let nz = z as isize + dz;
+                if nx < 0
+                    || ny < 0
+                    || nz < 0
+                    || nx >= grid.dims[0] as isize
+                    || ny >= grid.dims[1] as isize
+                    || nz >= grid.dims[2] as isize
+                {
+                    continue;
+                }
+
+                visit(grid.index(nx as usize, ny as usize, nz as usize));
+            }
+        }
+    }
+}
+
 fn movement_cost(dx: isize, dy: isize, dz: isize, grid: Grid, rate: Vec3) -> f64 {
     let x = dx as f64 * grid.voxel_size.x / rate.x;
     let y = dy as f64 * grid.voxel_size.y / rate.y;
@@ -977,7 +1162,7 @@ mod tests {
     }
 
     #[test]
-    fn expands_field_by_requested_layers_without_changing_occupancy_requirement() {
+    fn expands_field_by_requested_voxel_band() {
         let grid = grid([5, 1, 1]);
         let mut field = Field {
             distances: vec![f64::INFINITY; grid.voxel_count()],
@@ -992,12 +1177,12 @@ mod tests {
 
         expand_field(&mut field, grid, 2, &propagation);
 
-        assert_eq!(field.distances[grid.index(0, 0, 0)], 2.0);
-        assert_eq!(field.distances[grid.index(1, 0, 0)], 1.0);
+        assert_eq!(field.distances[grid.index(0, 0, 0)], 0.0);
+        assert_eq!(field.distances[grid.index(1, 0, 0)], 0.0);
         assert_eq!(field.distances[grid.index(2, 0, 0)], 0.0);
-        assert_eq!(field.distances[grid.index(3, 0, 0)], 1.0);
-        assert_eq!(field.distances[grid.index(4, 0, 0)], 2.0);
-        assert_eq!(field.max_distance, 2.0);
+        assert_eq!(field.distances[grid.index(3, 0, 0)], 0.0);
+        assert_eq!(field.distances[grid.index(4, 0, 0)], 0.0);
+        assert_eq!(field.max_distance, 0.0);
     }
 
     #[test]
@@ -1018,10 +1203,54 @@ mod tests {
         expand_field(&mut field, grid, 2, &propagation);
 
         assert_eq!(field.distances[grid.index(0, 0, 0)], 0.0);
-        assert_eq!(field.distances[grid.index(1, 0, 0)], 1.0);
-        assert_eq!(field.distances[grid.index(2, 0, 0)], 2.0);
+        assert_eq!(field.distances[grid.index(1, 0, 0)], 0.0);
+        assert_eq!(field.distances[grid.index(2, 0, 0)], 10.0);
         assert_eq!(field.distances[grid.index(3, 0, 0)], 10.0);
-        assert_eq!(field.distances[grid.index(4, 0, 0)], 11.0);
+        assert_eq!(field.distances[grid.index(4, 0, 0)], 10.0);
+    }
+
+    #[test]
+    fn expand_field_extrapolates_boundary_gradient() {
+        let grid = grid([5, 1, 1]);
+        let mut field = Field {
+            distances: vec![f64::INFINITY; grid.voxel_count()],
+            max_distance: 0.0,
+        };
+        field.distances[grid.index(0, 0, 0)] = 0.0;
+        field.distances[grid.index(1, 0, 0)] = 1.0;
+        field.distances[grid.index(2, 0, 0)] = 2.0;
+        let propagation = AnisotropicEuclideanPropagation::new(Vec3 {
+            x: 1.0,
+            y: 1.0,
+            z: 1.0,
+        });
+
+        expand_field(&mut field, grid, 2, &propagation);
+
+        assert_eq!(field.distances[grid.index(3, 0, 0)], 3.0);
+        assert_eq!(field.distances[grid.index(4, 0, 0)], 4.0);
+    }
+
+    #[test]
+    fn expand_field_limits_extrapolation_to_requested_voxel_band() {
+        let grid = grid([5, 1, 1]);
+        let mut field = Field {
+            distances: vec![f64::INFINITY; grid.voxel_count()],
+            max_distance: 0.0,
+        };
+        field.distances[grid.index(0, 0, 0)] = 0.0;
+        let propagation = AnisotropicEuclideanPropagation::new(Vec3 {
+            x: 1.0,
+            y: 1.0,
+            z: 1.0,
+        });
+
+        expand_field(&mut field, grid, 2, &propagation);
+
+        assert_eq!(field.distances[grid.index(1, 0, 0)], 0.0);
+        assert_eq!(field.distances[grid.index(2, 0, 0)], 0.0);
+        assert!(field.distances[grid.index(3, 0, 0)].is_infinite());
+        assert!(field.distances[grid.index(4, 0, 0)].is_infinite());
     }
 
     #[test]
