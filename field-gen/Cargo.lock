@@ -152,6 +152,22 @@ name = "shockwave-core"
 version = "0.1.0"
 
 [[package]]
+name = "shockwave-gcode"
+version = "0.1.0"
+dependencies = [
+ "shockwave-core",
+ "shockwave-path",
+]
+
+[[package]]
+name = "shockwave-geodesic"
+version = "0.1.0"
+dependencies = [
+ "shockwave-core",
+ "shockwave-mesh",
+]
+
+[[package]]
 name = "shockwave-iso"
 version = "0.1.0"
 dependencies = [
@@ -174,6 +190,15 @@ dependencies = [
  "shockwave-core",
  "shockwave-iso",
  "shockwave-voxel",
+]
+
+[[package]]
+name = "shockwave-path"
+version = "0.1.0"
+dependencies = [
+ "shockwave-core",
+ "shockwave-geodesic",
+ "shockwave-mesh",
 ]
 
 [[package]]

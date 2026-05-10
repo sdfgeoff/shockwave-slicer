@@ -1,0 +1,10 @@
+[package]
+name = "shockwave-geodesic"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+shockwave-mesh = { path = "../shockwave-mesh" }
+
+[dev-dependencies]
+shockwave-core = { path = "../shockwave-core" }
