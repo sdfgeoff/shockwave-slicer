@@ -80,6 +80,29 @@ field-gen input.stl --voxel 1 1 1 --kernel kernel.json \
 
 `--max-unreached-below` prevents a voxel from being reached while any other unreached occupied voxel is more than the configured distance below it. `--unreached-cone-angle` reserves an upward cone above every unreached occupied voxel until that voxel is reached. The angle is measured from vertical; the default is `80` degrees. Use `--unreached-cone-angle 0` to disable the cone constraint.
 
+## Experimental G-code Output
+
+`field-gen` can generate experimental perimeter-only Marlin G-code from the clipped isosurfaces:
+
+```bash
+field-gen input.stl --voxel 0.4 0.4 0.4 --field-method trapezoid \
+  --iso-spacing 1.0 \
+  --gcode \
+  --wall-count 2 \
+  --extrusion-width 0.4 \
+  --nominal-layer-height 0.2 \
+  --filament-diameter 1.75 \
+  --output output/prefix
+```
+
+This currently computes mesh boundary distance on each clipped isosurface, extracts contour-parallel perimeter paths at bead centerline offsets, and writes `output/prefix.gcode`. It does not yet generate infill, Arachne-style bead variation, support material, travel optimization, or accurate local non-planar layer-height compensation. Treat it as a pathing integration test, not printer-ready slicer output.
+
+The Makefile exposes this as:
+
+```bash
+make voxels GCODE=1
+```
+
 ## Metadata
 
 The JSON sidecar records the values needed to interpret the atlas:

@@ -208,10 +208,14 @@ fn triangle_contour_segment(
     }
 
     dedup_points(&mut points);
-    (points.len() == 2).then_some(Segment {
-        a: points[0],
-        b: points[1],
-    })
+    if points.len() == 2 {
+        Some(Segment {
+            a: points[0],
+            b: points[1],
+        })
+    } else {
+        None
+    }
 }
 
 fn join_segments(
@@ -387,6 +391,30 @@ mod tests {
         for point in &paths[0].points {
             assert!((point.position.x - 0.5).abs() < 1.0e-9);
         }
+    }
+
+    #[test]
+    fn ignores_degenerate_contour_touching_single_vertex() {
+        let mesh = Mesh {
+            vertices: vec![
+                vertex(0.0, 0.0, 0.0),
+                vertex(1.0, 0.0, 0.0),
+                vertex(0.0, 1.0, 0.0),
+            ],
+            triangles: vec![[0, 1, 2]],
+        };
+        let values = vec![0.5, 1.0, 1.0];
+
+        let paths = contour_toolpaths(
+            &mesh,
+            &values,
+            0.5,
+            ToolpathRole::Perimeter,
+            ContourOptions::default(),
+        )
+        .unwrap();
+
+        assert!(paths.is_empty());
     }
 
     #[test]

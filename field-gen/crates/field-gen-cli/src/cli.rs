@@ -32,6 +32,11 @@ pub struct Config {
     pub max_unreached_below_mm: f64,
     pub unreached_cone_angle_degrees: f64,
     pub iso_spacing: f64,
+    pub gcode_enabled: bool,
+    pub wall_count: usize,
+    pub extrusion_width_mm: f64,
+    pub nominal_layer_height_mm: f64,
+    pub filament_diameter_mm: f64,
 }
 
 pub fn parse_args(args: Vec<String>) -> Result<Config, String> {
@@ -56,6 +61,11 @@ pub fn parse_args(args: Vec<String>) -> Result<Config, String> {
     let mut max_unreached_below_mm = 5.0;
     let mut unreached_cone_angle_degrees = 80.0;
     let mut iso_spacing = 0.5_f64;
+    let mut gcode_enabled = false;
+    let mut wall_count = 2usize;
+    let mut extrusion_width_mm = 0.4_f64;
+    let mut nominal_layer_height_mm = 0.2_f64;
+    let mut filament_diameter_mm = 1.75_f64;
     let mut index = 1;
 
     while index < args.len() {
@@ -115,6 +125,31 @@ pub fn parse_args(args: Vec<String>) -> Result<Config, String> {
                     .parse()
                     .map_err(|_| "--iso-spacing must be numeric".to_string())?;
             }
+            "--gcode" => {
+                gcode_enabled = true;
+                field_enabled = true;
+            }
+            "--wall-count" => {
+                index += 1;
+                wall_count = args
+                    .get(index)
+                    .ok_or_else(|| "--wall-count requires a non-negative integer".to_string())?
+                    .parse()
+                    .map_err(|_| "--wall-count must be a non-negative integer".to_string())?;
+            }
+            "--extrusion-width" => {
+                index += 1;
+                extrusion_width_mm = parse_positive_number("--extrusion-width", &args, index)?;
+            }
+            "--nominal-layer-height" => {
+                index += 1;
+                nominal_layer_height_mm =
+                    parse_positive_number("--nominal-layer-height", &args, index)?;
+            }
+            "--filament-diameter" => {
+                index += 1;
+                filament_diameter_mm = parse_positive_number("--filament-diameter", &args, index)?;
+            }
             "--output" | "-o" => {
                 index += 1;
                 output_prefix = args
@@ -138,6 +173,9 @@ pub fn parse_args(args: Vec<String>) -> Result<Config, String> {
     if iso_spacing <= 0.0 || !iso_spacing.is_finite() {
         return Err("--iso-spacing must be greater than zero".to_string());
     }
+    if gcode_enabled && wall_count == 0 {
+        return Err("--wall-count must be greater than zero when --gcode is enabled".to_string());
+    }
 
     Ok(Config {
         input,
@@ -153,6 +191,11 @@ pub fn parse_args(args: Vec<String>) -> Result<Config, String> {
         max_unreached_below_mm,
         unreached_cone_angle_degrees,
         iso_spacing,
+        gcode_enabled,
+        wall_count,
+        extrusion_width_mm,
+        nominal_layer_height_mm,
+        filament_diameter_mm,
     })
 }
 
@@ -211,6 +254,18 @@ fn parse_non_negative_number(flag: &str, args: &[String], index: usize) -> Resul
     Ok(value)
 }
 
+fn parse_positive_number(flag: &str, args: &[String], index: usize) -> Result<f64, String> {
+    let value = args
+        .get(index)
+        .ok_or_else(|| format!("{flag} requires a positive numeric value"))?
+        .parse()
+        .map_err(|_| format!("{flag} must be numeric"))?;
+    if value <= 0.0 || !f64::is_finite(value) {
+        return Err(format!("{flag} must be a finite number greater than zero"));
+    }
+    Ok(value)
+}
+
 fn parse_angle_degrees(flag: &str, args: &[String], index: usize) -> Result<f64, String> {
     let value = args
         .get(index)
@@ -224,7 +279,7 @@ fn parse_angle_degrees(flag: &str, args: &[String], index: usize) -> Result<f64,
 }
 
 fn usage() -> String {
-    "usage: field-gen <input.stl> --voxel <x-mm> <y-mm> <z-mm> [--size <x-mm> <y-mm> <z-mm>] [--padding-voxels <n>] [--origin <x-mm> <y-mm> <z-mm>] [--field] [--field-method <anisotropic|trapezoid>] [--field-rate <x> <y> <z>] [--kernel <kernel.json>] [--max-unreached-below <mm>] [--unreached-cone-angle <degrees>] [--iso-spacing <distance>] [--output <prefix>]\n\
+    "usage: field-gen <input.stl> --voxel <x-mm> <y-mm> <z-mm> [--size <x-mm> <y-mm> <z-mm>] [--padding-voxels <n>] [--origin <x-mm> <y-mm> <z-mm>] [--field] [--field-method <anisotropic|trapezoid>] [--field-rate <x> <y> <z>] [--kernel <kernel.json>] [--max-unreached-below <mm>] [--unreached-cone-angle <degrees>] [--iso-spacing <distance>] [--gcode] [--wall-count <n>] [--extrusion-width <mm>] [--nominal-layer-height <mm>] [--filament-diameter <mm>] [--output <prefix>]\n\
 \n\
 STL coordinates are assumed to be millimeters. If --size is provided, it is treated as a maximum grid size.\n\
 By default, the grid fits the STL bounds plus 3 voxels of padding on each side.\n\
@@ -234,6 +289,9 @@ By default, the grid fits the STL bounds plus 3 voxels of padding on each side.\
 --max-unreached-below defaults to 5mm and prevents reaching high voxels while lower occupied voxels remain unreached.\n\
 --unreached-cone-angle defaults to 80 degrees from vertical and reserves access cones above unreached occupied voxels. Use 0 to disable this constraint.\n\
 --iso-spacing controls the spacing between exported isosurface levels when --field is enabled.\n\
+--gcode writes perimeter-only Marlin G-code from clipped isosurfaces and implies --field.\n\
+--wall-count defaults to 2 when --gcode is enabled.\n\
+--extrusion-width defaults to 0.4mm, --nominal-layer-height defaults to 0.2mm, and --filament-diameter defaults to 1.75mm.\n\
 Voxel size takes priority: grid dimensions are ceil(size / voxel), so actual size may expand slightly."
         .to_string()
 }

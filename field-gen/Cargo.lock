@@ -41,8 +41,10 @@ dependencies = [
  "serde_json",
  "shockwave-clip",
  "shockwave-core",
+ "shockwave-gcode",
  "shockwave-iso",
  "shockwave-output",
+ "shockwave-path",
  "shockwave-stl",
  "shockwave-voxel",
 ]

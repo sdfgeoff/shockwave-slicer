@@ -18,6 +18,11 @@ KERNEL ?=
 MAX_UNREACHED_BELOW ?= 5
 UNREACHED_CONE_ANGLE ?= 45
 ISO_SPACING ?= 1.0
+GCODE ?= 0
+WALL_COUNT ?= 2
+EXTRUSION_WIDTH ?= 0.4
+NOMINAL_LAYER_HEIGHT ?= 0.2
+FILAMENT_DIAMETER ?= 1.75
 
 VOXEL_GEN := field-gen/target/release/field-gen
 FIELD_GEN_SOURCES := $(shell find field-gen/crates -type f 2>/dev/null)
@@ -25,9 +30,13 @@ INPUT_STEMS := $(patsubst $(INPUT_DIR)/%.stl,%,$(wildcard $(INPUT_DIR)/*.stl)) \
 	$(patsubst $(INPUT_DIR)/%.STL,%,$(wildcard $(INPUT_DIR)/*.STL))
 OUTPUT_SUFFIXES := .occ .bmp .json
 OUTPUT_TARGET_PATTERN := $(OUTPUT_DIR)/%.occ $(OUTPUT_DIR)/%.bmp $(OUTPUT_DIR)/%.json
-ifneq ($(FIELD),0)
+ifneq ($(filter-out 0,$(FIELD) $(GCODE)),)
 OUTPUT_SUFFIXES += .ply -clipped.ply
 OUTPUT_TARGET_PATTERN += $(OUTPUT_DIR)/%.ply $(OUTPUT_DIR)/%-clipped.ply
+endif
+ifneq ($(GCODE),0)
+OUTPUT_SUFFIXES += .gcode
+OUTPUT_TARGET_PATTERN += $(OUTPUT_DIR)/%.gcode
 endif
 VOXEL_OUTPUTS := $(foreach stem,$(INPUT_STEMS),$(addprefix $(OUTPUT_DIR)/$(stem),$(OUTPUT_SUFFIXES)))
 
@@ -40,6 +49,10 @@ FIELD_ARGS := --field --field-method $(FIELD_METHOD) --field-rate $(FIELD_RATE_X
 else
 FIELD_ARGS := --field --field-method $(FIELD_METHOD) --max-unreached-below $(MAX_UNREACHED_BELOW) --unreached-cone-angle $(UNREACHED_CONE_ANGLE)
 endif
+endif
+GCODE_ARGS :=
+ifneq ($(GCODE),0)
+GCODE_ARGS := --gcode --wall-count $(WALL_COUNT) --extrusion-width $(EXTRUSION_WIDTH) --nominal-layer-height $(NOMINAL_LAYER_HEIGHT) --filament-diameter $(FILAMENT_DIAMETER)
 endif
 
 .PHONY: all voxels clean list-inputs
@@ -63,6 +76,7 @@ $(OUTPUT_TARGET_PATTERN) &: $(INPUT_DIR)/%.stl $(VOXEL_GEN) Makefile
 		--padding-voxels "$(PADDING_VOXELS)" \
 		--iso-spacing "$(ISO_SPACING)" \
 		$(FIELD_ARGS) \
+		$(GCODE_ARGS) \
 		--output "$(OUTPUT_DIR)/$*"
 
 $(OUTPUT_TARGET_PATTERN) &: $(INPUT_DIR)/%.STL $(VOXEL_GEN) Makefile
@@ -74,6 +88,7 @@ $(OUTPUT_TARGET_PATTERN) &: $(INPUT_DIR)/%.STL $(VOXEL_GEN) Makefile
 		--padding-voxels "$(PADDING_VOXELS)" \
 		--iso-spacing "$(ISO_SPACING)" \
 		$(FIELD_ARGS) \
+		$(GCODE_ARGS) \
 		--output "$(OUTPUT_DIR)/$*"
 
 list-inputs:

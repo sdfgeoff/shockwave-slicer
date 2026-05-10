@@ -11,10 +11,12 @@ use serde_json::Value;
 use shockwave_clip::{TriangleSolid, clip_mesh_to_solid};
 use shockwave_core::geometry::{Triangle, Vec3, mesh_bounds};
 use shockwave_core::grid::{Grid, GridSpec, build_grid};
+use shockwave_gcode::{MarlinConfig, write_marlin_gcode};
 use shockwave_iso::{Isosurface, IsosurfaceSet, extract_regular_isosurfaces};
 use shockwave_output::{
     Metadata, MetadataDocument, build_atlas, metadata_json, write_occupancy_bmp, write_ply_binary,
 };
+use shockwave_path::{ContourOptions, LayerToolpaths, perimeter_layer_from_boundary};
 use shockwave_stl::parse_stl;
 use shockwave_voxel::field::{
     AnisotropicEuclideanPropagation, ExplicitKernelPropagation, Field, KernelMove, KernelPathCheck,
@@ -265,6 +267,14 @@ mod tests {
         assert!((one_up.cost - 0.4).abs() < 1.0e-9);
         assert!((two_up.cost - 0.8).abs() < 1.0e-9);
     }
+
+    #[test]
+    fn perimeter_offsets_use_bead_centerlines() {
+        let offsets = perimeter_offsets(3, 0.4);
+        assert!((offsets[0] - 0.2).abs() < 1.0e-12);
+        assert!((offsets[1] - 0.6).abs() < 1.0e-12);
+        assert!((offsets[2] - 1.0).abs() < 1.0e-12);
+    }
 }
 
 fn propagate_and_expand(
@@ -368,6 +378,7 @@ struct OutputPaths {
     image: std::path::PathBuf,
     mesh: Option<std::path::PathBuf>,
     clipped_mesh: Option<std::path::PathBuf>,
+    gcode: Option<std::path::PathBuf>,
     metadata: std::path::PathBuf,
 }
 
@@ -390,6 +401,9 @@ fn write_outputs(
     let clipped_mesh_path = field
         .as_ref()
         .map(|_| suffixed_output_path(config, "clipped", "ply"));
+    let gcode_path = config
+        .gcode_enabled
+        .then(|| config.output_prefix.with_extension("gcode"));
     let metadata_path = config.output_prefix.with_extension("json");
 
     let occ_start = Instant::now();
@@ -434,6 +448,30 @@ fn write_outputs(
                 format!("failed to write {}: {error}", clipped_mesh_path.display())
             })?;
             log_timing("write clipped ply", clipped_ply_start.elapsed());
+
+            if let Some(gcode_path) = gcode_path.as_ref() {
+                let path_start = Instant::now();
+                let layers = toolpaths_from_isosurfaces(&clipped_mesh, config)?;
+                log_timing("generate perimeter paths", path_start.elapsed());
+                eprintln!(
+                    "timing: generated {} toolpath layers with {} paths",
+                    layers.len(),
+                    layers.iter().map(LayerToolpaths::path_count).sum::<usize>()
+                );
+
+                let gcode_start = Instant::now();
+                let gcode = write_marlin_gcode(
+                    &layers,
+                    MarlinConfig {
+                        filament_diameter_mm: config.filament_diameter_mm,
+                        ..Default::default()
+                    },
+                )?;
+                fs::write(gcode_path, gcode).map_err(|error| {
+                    format!("failed to write {}: {error}", gcode_path.display())
+                })?;
+                log_timing("write gcode", gcode_start.elapsed());
+            }
         }
     }
 
@@ -482,8 +520,36 @@ fn write_outputs(
         image: image_path,
         mesh: mesh_path,
         clipped_mesh: clipped_mesh_path,
+        gcode: gcode_path,
         metadata: metadata_path,
     })
+}
+
+fn toolpaths_from_isosurfaces(
+    surfaces: &IsosurfaceSet,
+    config: &cli::Config,
+) -> Result<Vec<LayerToolpaths>, String> {
+    let offsets = perimeter_offsets(config.wall_count, config.extrusion_width_mm);
+    let options = ContourOptions {
+        extrusion_width_mm: config.extrusion_width_mm,
+        layer_height_mm: config.nominal_layer_height_mm,
+        ..Default::default()
+    };
+
+    surfaces
+        .surfaces
+        .par_iter()
+        .filter(|surface| !surface.mesh.is_empty())
+        .map(|surface| {
+            perimeter_layer_from_boundary(&surface.mesh, surface.value, &offsets, options)
+        })
+        .collect()
+}
+
+fn perimeter_offsets(wall_count: usize, extrusion_width_mm: f64) -> Vec<f64> {
+    (0..wall_count)
+        .map(|index| (index as f64 + 0.5) * extrusion_width_mm)
+        .collect()
 }
 
 fn clip_isosurfaces_to_solid(surfaces: &IsosurfaceSet, triangles: &[Triangle]) -> IsosurfaceSet {
@@ -535,6 +601,9 @@ fn print_summary(triangles: &[Triangle], occupancy: &[u8], grid: Grid, paths: &O
     }
     if let Some(mesh) = &paths.clipped_mesh {
         println!("Wrote {}", mesh.display());
+    }
+    if let Some(gcode) = &paths.gcode {
+        println!("Wrote {}", gcode.display());
     }
     println!("Wrote {}", paths.metadata.display());
 }

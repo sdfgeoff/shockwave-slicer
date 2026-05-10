@@ -8,7 +8,9 @@ rayon = "1.10"
 serde_json = "1.0"
 shockwave-clip = { path = "../shockwave-clip" }
 shockwave-core = { path = "../shockwave-core" }
+shockwave-gcode = { path = "../shockwave-gcode" }
 shockwave-iso = { path = "../shockwave-iso" }
 shockwave-output = { path = "../shockwave-output" }
+shockwave-path = { path = "../shockwave-path" }
 shockwave-stl = { path = "../shockwave-stl" }
 shockwave-voxel = { path = "../shockwave-voxel" }
