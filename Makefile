@@ -21,7 +21,6 @@ ISO_SPACING ?= 1.0
 GCODE ?= 1
 WALL_COUNT ?= 2
 EXTRUSION_WIDTH ?= 0.4
-NOMINAL_LAYER_HEIGHT ?= 0.2
 FILAMENT_DIAMETER ?= 1.75
 INFILL_SPACING ?= 4
 
@@ -53,7 +52,7 @@ endif
 endif
 GCODE_ARGS :=
 ifneq ($(GCODE),0)
-GCODE_ARGS := --gcode --wall-count $(WALL_COUNT) --extrusion-width $(EXTRUSION_WIDTH) --nominal-layer-height $(NOMINAL_LAYER_HEIGHT) --filament-diameter $(FILAMENT_DIAMETER) --infill-spacing $(INFILL_SPACING)
+GCODE_ARGS := --gcode --wall-count $(WALL_COUNT) --extrusion-width $(EXTRUSION_WIDTH) --filament-diameter $(FILAMENT_DIAMETER) --infill-spacing $(INFILL_SPACING)
 endif
 
 .PHONY: all voxels clean list-inputs

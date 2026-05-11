@@ -90,7 +90,6 @@ field-gen input.stl --voxel 0.4 0.4 0.4 --field-method trapezoid \
   --gcode \
   --wall-count 2 \
   --extrusion-width 0.4 \
-  --nominal-layer-height 0.2 \
   --filament-diameter 1.75 \
   --infill-spacing 4.0 \
   --output output/prefix
@@ -98,7 +97,7 @@ field-gen input.stl --voxel 0.4 0.4 0.4 --field-method trapezoid \
 
 This currently computes mesh boundary distance on each clipped isosurface, extracts contour-parallel perimeter paths at bead centerline offsets, adds simple world-space grid infill, and writes `output/prefix.gcode`. The number of walls is configurable with `--wall-count` or `WALL_COUNT` in the Makefile. Infill spacing is configurable with `--infill-spacing` or `INFILL_SPACING`; use `0` to disable infill. G-code coordinates are shifted so the original STL/model bounds minimum maps to `X=0`, `Y=0`, and `Z=0`.
 
-Extrusion height is estimated per path point from the propagated field gradient as `iso_spacing / |grad(field)|`, falling back to `--nominal-layer-height` where the gradient is unavailable. Travel between paths uses a basic Z-hop to the highest point on the current layer.
+Extrusion height is estimated per path point from the propagated field gradient as `iso_spacing / |grad(field)|`. G-code generation fails if the field gradient is undefined or non-finite at a path point; temporary pre-gradient path defaults use `--iso-spacing`. Travel between paths uses a basic Z-hop to the highest point on the current layer.
 
 It does not yet generate Arachne-style bead variation, support material, robust travel optimization, or mature local non-planar layer-height compensation. Treat it as a pathing integration test, not printer-ready slicer output.
 

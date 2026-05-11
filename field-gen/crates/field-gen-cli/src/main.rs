@@ -330,10 +330,50 @@ mod tests {
                 z: 1.5,
             },
             1.0,
-            0.2,
-        );
+        )
+        .unwrap();
 
         assert!((height - 0.5).abs() < 1.0e-12);
+    }
+
+    #[test]
+    fn local_layer_height_errors_on_undefined_gradient() {
+        let grid = Grid {
+            origin: Vec3 {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            },
+            dims: [1, 1, 1],
+            voxel_size: Vec3 {
+                x: 1.0,
+                y: 1.0,
+                z: 1.0,
+            },
+            actual_size: Vec3 {
+                x: 1.0,
+                y: 1.0,
+                z: 1.0,
+            },
+        };
+        let field = Field {
+            distances: vec![0.0],
+            max_distance: 0.0,
+        };
+
+        let error = local_layer_height(
+            &field,
+            grid,
+            Vec3 {
+                x: 0.5,
+                y: 0.5,
+                z: 0.5,
+            },
+            1.0,
+        )
+        .unwrap_err();
+
+        assert!(error.contains("field gradient is invalid"));
     }
 }
 
@@ -595,7 +635,7 @@ fn toolpaths_from_isosurfaces(
     let offsets = perimeter_offsets(config.wall_count, config.extrusion_width_mm);
     let options = ContourOptions {
         extrusion_width_mm: config.extrusion_width_mm,
-        layer_height_mm: config.nominal_layer_height_mm,
+        layer_height_mm: config.iso_spacing,
         ..Default::default()
     };
 
@@ -611,13 +651,7 @@ fn toolpaths_from_isosurfaces(
                 config.infill_spacing_mm,
                 options,
             )?;
-            apply_local_layer_heights(
-                &mut layer,
-                field,
-                grid,
-                config.iso_spacing,
-                config.nominal_layer_height_mm,
-            );
+            apply_local_layer_heights(&mut layer, field, grid, config.iso_spacing)?;
             Ok(layer)
         })
         .collect()
@@ -642,14 +676,13 @@ fn apply_local_layer_heights(
     field: &Field,
     grid: Grid,
     iso_spacing: f64,
-    fallback_height: f64,
-) {
+) -> Result<(), String> {
     for path in &mut layer.paths {
         for point in &mut path.points {
-            point.layer_height_mm =
-                local_layer_height(field, grid, point.position, iso_spacing, fallback_height);
+            point.layer_height_mm = local_layer_height(field, grid, point.position, iso_spacing)?;
         }
     }
+    Ok(())
 }
 
 fn local_layer_height(
@@ -657,22 +690,30 @@ fn local_layer_height(
     grid: Grid,
     position: Vec3,
     iso_spacing: f64,
-    fallback_height: f64,
-) -> f64 {
+) -> Result<f64, String> {
     let Some(gradient) = field_gradient_at_nearest_voxel(field, grid, position) else {
-        return fallback_height;
+        return Err(format!(
+            "field gradient is undefined at path point ({:.6}, {:.6}, {:.6})",
+            position.x, position.y, position.z
+        ));
     };
     let gradient_length =
         (gradient.x * gradient.x + gradient.y * gradient.y + gradient.z * gradient.z).sqrt();
     if gradient_length <= 1.0e-9 || !gradient_length.is_finite() {
-        return fallback_height;
+        return Err(format!(
+            "field gradient is invalid at path point ({:.6}, {:.6}, {:.6}): gradient=({:.6}, {:.6}, {:.6})",
+            position.x, position.y, position.z, gradient.x, gradient.y, gradient.z
+        ));
     }
 
     let height = iso_spacing / gradient_length;
     if height.is_finite() && height > 0.0 {
-        height
+        Ok(height)
     } else {
-        fallback_height
+        Err(format!(
+            "local layer height is invalid at path point ({:.6}, {:.6}, {:.6}): iso_spacing={:.6}, gradient_length={:.6}",
+            position.x, position.y, position.z, iso_spacing, gradient_length
+        ))
     }
 }
 
