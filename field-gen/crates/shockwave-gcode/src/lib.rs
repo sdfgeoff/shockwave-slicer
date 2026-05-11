@@ -117,11 +117,24 @@ pub fn write_marlin_gcode(
 }
 
 fn ordered_path_indices(layer: &LayerToolpaths) -> Vec<usize> {
+    let perimeter_indices: Vec<usize> = layer
+        .paths
+        .iter()
+        .enumerate()
+        .filter(|(_, path)| path.role == ToolpathRole::Perimeter && !path.points.is_empty())
+        .map(|(index, _)| index)
+        .collect();
     let mut remaining: Vec<usize> = (0..layer.paths.len())
-        .filter(|index| !layer.paths[*index].points.is_empty())
+        .filter(|index| {
+            layer.paths[*index].role != ToolpathRole::Perimeter
+                && !layer.paths[*index].points.is_empty()
+        })
         .collect();
     let mut ordered = Vec::with_capacity(remaining.len());
-    let mut current = None;
+    let mut current = perimeter_indices
+        .last()
+        .map(|index| path_end_position(&layer.paths[*index]));
+    ordered.extend(perimeter_indices);
 
     while !remaining.is_empty() {
         let next_remaining_index = if let Some(current_position) = current {
@@ -141,16 +154,19 @@ fn ordered_path_indices(layer: &LayerToolpaths) -> Vec<usize> {
             0
         };
         let path_index = remaining.swap_remove(next_remaining_index);
-        let path = &layer.paths[path_index];
-        current = Some(if path.closed {
-            path.points[0].position
-        } else {
-            path.points.last().unwrap().position
-        });
+        current = Some(path_end_position(&layer.paths[path_index]));
         ordered.push(path_index);
     }
 
     ordered
+}
+
+fn path_end_position(path: &shockwave_path::Toolpath) -> Vec3 {
+    if path.closed {
+        path.points[0].position
+    } else {
+        path.points.last().unwrap().position
+    }
 }
 
 fn layer_travel_z(layer: &LayerToolpaths, offset: Vec3) -> f64 {
@@ -376,6 +392,37 @@ mod tests {
         assert!(gcode.contains(";TYPE:Travel"));
         assert!(gcode.contains("G0 X1.00000 Y0.00000 Z0.80000"));
         assert!(gcode.contains("G0 X10.00000 Y0.00000 Z0.80000"));
+    }
+
+    #[test]
+    fn preserves_perimeter_order_before_other_paths() {
+        let point = |x| PathPoint {
+            position: Vec3 { x, y: 0.0, z: 0.0 },
+            extrusion_width_mm: 0.4,
+            layer_height_mm: 0.2,
+        };
+        let layer = LayerToolpaths {
+            field_value: 1.0,
+            paths: vec![
+                Toolpath {
+                    points: vec![point(10.0), point(11.0)],
+                    role: ToolpathRole::Perimeter,
+                    closed: false,
+                },
+                Toolpath {
+                    points: vec![point(0.0), point(1.0)],
+                    role: ToolpathRole::Infill,
+                    closed: false,
+                },
+                Toolpath {
+                    points: vec![point(20.0), point(21.0)],
+                    role: ToolpathRole::Perimeter,
+                    closed: false,
+                },
+            ],
+        };
+
+        assert_eq!(ordered_path_indices(&layer), vec![0, 2, 1]);
     }
 
     #[test]

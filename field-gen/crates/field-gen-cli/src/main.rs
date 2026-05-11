@@ -272,9 +272,9 @@ mod tests {
     #[test]
     fn perimeter_offsets_use_bead_centerlines() {
         let offsets = perimeter_offsets(3, 0.4);
-        assert!((offsets[0] - 0.2).abs() < 1.0e-12);
+        assert!((offsets[0] - 1.0).abs() < 1.0e-12);
         assert!((offsets[1] - 0.6).abs() < 1.0e-12);
-        assert!((offsets[2] - 1.0).abs() < 1.0e-12);
+        assert!((offsets[2] - 0.2).abs() < 1.0e-12);
     }
 
     #[test]
@@ -720,6 +720,7 @@ fn toolpaths_from_isosurfaces(
 
 fn perimeter_offsets(wall_count: usize, extrusion_width_mm: f64) -> Vec<f64> {
     (0..wall_count)
+        .rev()
         .map(|index| (index as f64 + 0.5) * extrusion_width_mm)
         .collect()
 }
