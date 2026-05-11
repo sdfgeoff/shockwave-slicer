@@ -82,7 +82,7 @@ field-gen input.stl --voxel 1 1 1 --kernel kernel.json \
 
 ## Experimental G-code Output
 
-`field-gen` can generate experimental perimeter-only Marlin G-code from the clipped isosurfaces:
+`field-gen` can generate experimental Marlin G-code from the clipped isosurfaces:
 
 ```bash
 field-gen input.stl --voxel 0.4 0.4 0.4 --field-method trapezoid \
@@ -110,6 +110,7 @@ make voxels
 Use `make voxels GCODE=0` to skip G-code output.
 Use `make voxels WALL_COUNT=1` to generate a single wall/perimeter.
 Use `make voxels INFILL_SPACING=0` to disable infill.
+Use `make voxels PLY=1` or pass `--export-ply` to also write unclipped and clipped isosurface PLY files. PLY output is disabled by default.
 
 ## Metadata
 

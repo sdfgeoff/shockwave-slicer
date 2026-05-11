@@ -545,12 +545,10 @@ fn write_outputs(
 
     let volume_path = config.output_prefix.with_extension("occ");
     let image_path = config.output_prefix.with_extension("bmp");
-    let mesh_path = field
-        .as_ref()
-        .map(|_| config.output_prefix.with_extension("ply"));
-    let clipped_mesh_path = field
-        .as_ref()
-        .map(|_| suffixed_output_path(config, "clipped", "ply"));
+    let mesh_path =
+        (field.is_some() && config.export_ply).then(|| config.output_prefix.with_extension("ply"));
+    let clipped_mesh_path = (field.is_some() && config.export_ply)
+        .then(|| suffixed_output_path(config, "clipped", "ply"));
     let gcode_path = config
         .gcode_enabled
         .then(|| config.output_prefix.with_extension("gcode"));
@@ -566,7 +564,10 @@ fn write_outputs(
         .map_err(|error| format!("failed to write {}: {error}", image_path.display()))?;
     log_timing("write bmp", bmp_start.elapsed());
 
-    if let (Some(field), Some(mesh_path)) = (field.as_ref(), mesh_path.as_ref()) {
+    if let Some(field) = field
+        .as_ref()
+        .filter(|_| config.export_ply || config.gcode_enabled)
+    {
         let extract_start = Instant::now();
         let mesh = extract_regular_isosurfaces(field, grid, config.iso_spacing)?;
         log_timing("extract isosurfaces", extract_start.elapsed());
@@ -577,12 +578,14 @@ fn write_outputs(
             mesh.triangle_count()
         );
 
-        let ply_start = Instant::now();
-        write_ply_binary(mesh_path, &mesh)
-            .map_err(|error| format!("failed to write {}: {error}", mesh_path.display()))?;
-        log_timing("write ply", ply_start.elapsed());
+        if let Some(mesh_path) = mesh_path.as_ref() {
+            let ply_start = Instant::now();
+            write_ply_binary(mesh_path, &mesh)
+                .map_err(|error| format!("failed to write {}: {error}", mesh_path.display()))?;
+            log_timing("write ply", ply_start.elapsed());
+        }
 
-        if let Some(clipped_mesh_path) = clipped_mesh_path.as_ref() {
+        if config.export_ply || config.gcode_enabled {
             let clip_start = Instant::now();
             let clipped_mesh = clip_isosurfaces_to_solid(&mesh, triangles);
             log_timing("clip isosurfaces", clip_start.elapsed());
@@ -593,11 +596,13 @@ fn write_outputs(
                 clipped_mesh.triangle_count()
             );
 
-            let clipped_ply_start = Instant::now();
-            write_ply_binary(clipped_mesh_path, &clipped_mesh).map_err(|error| {
-                format!("failed to write {}: {error}", clipped_mesh_path.display())
-            })?;
-            log_timing("write clipped ply", clipped_ply_start.elapsed());
+            if let Some(clipped_mesh_path) = clipped_mesh_path.as_ref() {
+                let clipped_ply_start = Instant::now();
+                write_ply_binary(clipped_mesh_path, &clipped_mesh).map_err(|error| {
+                    format!("failed to write {}: {error}", clipped_mesh_path.display())
+                })?;
+                log_timing("write clipped ply", clipped_ply_start.elapsed());
+            }
 
             if let Some(gcode_path) = gcode_path.as_ref() {
                 let path_start = Instant::now();

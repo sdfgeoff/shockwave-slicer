@@ -32,6 +32,7 @@ pub struct Config {
     pub max_unreached_below_mm: f64,
     pub unreached_cone_angle_degrees: f64,
     pub iso_spacing: f64,
+    pub export_ply: bool,
     pub gcode_enabled: bool,
     pub wall_count: usize,
     pub extrusion_width_mm: f64,
@@ -61,6 +62,7 @@ pub fn parse_args(args: Vec<String>) -> Result<Config, String> {
     let mut max_unreached_below_mm = 5.0;
     let mut unreached_cone_angle_degrees = 80.0;
     let mut iso_spacing = 0.5_f64;
+    let mut export_ply = false;
     let mut gcode_enabled = false;
     let mut wall_count = 2usize;
     let mut extrusion_width_mm = 0.4_f64;
@@ -129,6 +131,10 @@ pub fn parse_args(args: Vec<String>) -> Result<Config, String> {
                 gcode_enabled = true;
                 field_enabled = true;
             }
+            "--export-ply" => {
+                export_ply = true;
+                field_enabled = true;
+            }
             "--wall-count" => {
                 index += 1;
                 wall_count = args
@@ -191,6 +197,7 @@ pub fn parse_args(args: Vec<String>) -> Result<Config, String> {
         max_unreached_below_mm,
         unreached_cone_angle_degrees,
         iso_spacing,
+        export_ply,
         gcode_enabled,
         wall_count,
         extrusion_width_mm,
@@ -279,7 +286,7 @@ fn parse_angle_degrees(flag: &str, args: &[String], index: usize) -> Result<f64,
 }
 
 fn usage() -> String {
-    "usage: field-gen <input.stl> --voxel <x-mm> <y-mm> <z-mm> [--size <x-mm> <y-mm> <z-mm>] [--padding-voxels <n>] [--origin <x-mm> <y-mm> <z-mm>] [--field] [--field-method <anisotropic|trapezoid>] [--field-rate <x> <y> <z>] [--kernel <kernel.json>] [--max-unreached-below <mm>] [--unreached-cone-angle <degrees>] [--iso-spacing <distance>] [--gcode] [--wall-count <n>] [--extrusion-width <mm>] [--filament-diameter <mm>] [--infill-spacing <mm>] [--output <prefix>]\n\
+    "usage: field-gen <input.stl> --voxel <x-mm> <y-mm> <z-mm> [--size <x-mm> <y-mm> <z-mm>] [--padding-voxels <n>] [--origin <x-mm> <y-mm> <z-mm>] [--field] [--field-method <anisotropic|trapezoid>] [--field-rate <x> <y> <z>] [--kernel <kernel.json>] [--max-unreached-below <mm>] [--unreached-cone-angle <degrees>] [--iso-spacing <distance>] [--export-ply] [--gcode] [--wall-count <n>] [--extrusion-width <mm>] [--filament-diameter <mm>] [--infill-spacing <mm>] [--output <prefix>]\n\
 \n\
 STL coordinates are assumed to be millimeters. If --size is provided, it is treated as a maximum grid size.\n\
 By default, the grid fits the STL bounds plus 3 voxels of padding on each side.\n\
@@ -289,6 +296,7 @@ By default, the grid fits the STL bounds plus 3 voxels of padding on each side.\
 --max-unreached-below defaults to 5mm and prevents reaching high voxels while lower occupied voxels remain unreached.\n\
 --unreached-cone-angle defaults to 80 degrees from vertical and reserves access cones above unreached occupied voxels. Use 0 to disable this constraint.\n\
 --iso-spacing controls the spacing between exported isosurface levels when --field is enabled.\n\
+--export-ply writes unclipped and clipped isosurface PLY files; PLY output is disabled by default.\n\
 --gcode writes experimental Marlin G-code from clipped isosurfaces and implies --field.\n\
 --wall-count defaults to 2 when --gcode is enabled.\n\
 --extrusion-width defaults to 0.4mm, --filament-diameter defaults to 1.75mm, and --infill-spacing defaults to 4mm. Use --infill-spacing 0 to disable infill.\n\

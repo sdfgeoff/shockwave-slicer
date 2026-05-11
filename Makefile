@@ -10,6 +10,7 @@ SIZE_Y ?= 256
 SIZE_Z ?= 256
 PADDING_VOXELS ?= 3
 FIELD ?= 1
+PLY ?= 0
 FIELD_METHOD ?= trapezoid
 FIELD_RATE_X ?= 3.7
 FIELD_RATE_Y ?= 3.7
@@ -30,7 +31,7 @@ INPUT_STEMS := $(patsubst $(INPUT_DIR)/%.stl,%,$(wildcard $(INPUT_DIR)/*.stl)) \
 	$(patsubst $(INPUT_DIR)/%.STL,%,$(wildcard $(INPUT_DIR)/*.STL))
 OUTPUT_SUFFIXES := .occ .bmp .json
 OUTPUT_TARGET_PATTERN := $(OUTPUT_DIR)/%.occ $(OUTPUT_DIR)/%.bmp $(OUTPUT_DIR)/%.json
-ifneq ($(filter-out 0,$(FIELD) $(GCODE)),)
+ifneq ($(PLY),0)
 OUTPUT_SUFFIXES += .ply -clipped.ply
 OUTPUT_TARGET_PATTERN += $(OUTPUT_DIR)/%.ply $(OUTPUT_DIR)/%-clipped.ply
 endif
@@ -54,6 +55,10 @@ GCODE_ARGS :=
 ifneq ($(GCODE),0)
 GCODE_ARGS := --gcode --wall-count $(WALL_COUNT) --extrusion-width $(EXTRUSION_WIDTH) --filament-diameter $(FILAMENT_DIAMETER) --infill-spacing $(INFILL_SPACING)
 endif
+PLY_ARGS :=
+ifneq ($(PLY),0)
+PLY_ARGS := --export-ply
+endif
 
 .PHONY: all voxels clean list-inputs
 
@@ -76,6 +81,7 @@ $(OUTPUT_TARGET_PATTERN) &: $(INPUT_DIR)/%.stl $(VOXEL_GEN) Makefile
 		--padding-voxels "$(PADDING_VOXELS)" \
 		--iso-spacing "$(ISO_SPACING)" \
 		$(FIELD_ARGS) \
+		$(PLY_ARGS) \
 		$(GCODE_ARGS) \
 		--output "$(OUTPUT_DIR)/$*"
 
@@ -88,6 +94,7 @@ $(OUTPUT_TARGET_PATTERN) &: $(INPUT_DIR)/%.STL $(VOXEL_GEN) Makefile
 		--padding-voxels "$(PADDING_VOXELS)" \
 		--iso-spacing "$(ISO_SPACING)" \
 		$(FIELD_ARGS) \
+		$(PLY_ARGS) \
 		$(GCODE_ARGS) \
 		--output "$(OUTPUT_DIR)/$*"
 
