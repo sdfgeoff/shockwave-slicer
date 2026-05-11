@@ -1,6 +1,7 @@
 mod cli;
 
 use std::env;
+use std::f64::consts::FRAC_PI_4;
 use std::fs;
 use std::path::Path;
 use std::time::{Duration, Instant};
@@ -644,11 +645,17 @@ fn toolpaths_from_isosurfaces(
         .par_iter()
         .filter(|surface| !surface.mesh.is_empty())
         .map(|surface| {
+            let infill_angle = if surface.level % 2 == 0 {
+                -FRAC_PI_4
+            } else {
+                FRAC_PI_4
+            };
             let mut layer = layer_toolpaths_from_boundary(
                 &surface.mesh,
                 surface.value,
                 &offsets,
                 config.infill_spacing_mm,
+                infill_angle,
                 options,
             )?;
             apply_local_layer_heights(&mut layer, field, grid, config.iso_spacing)?;

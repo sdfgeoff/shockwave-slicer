@@ -155,6 +155,7 @@ pub fn layer_toolpaths_from_boundary(
     field_value: f64,
     wall_offsets_mm: &[f64],
     infill_spacing_mm: Option<f64>,
+    infill_angle_radians: f64,
     options: ContourOptions,
 ) -> Result<LayerToolpaths, String> {
     if !field_value.is_finite() {
@@ -175,6 +176,7 @@ pub fn layer_toolpaths_from_boundary(
             &boundary_distance,
             minimum_boundary_distance,
             spacing,
+            infill_angle_radians,
             options,
         )?);
     }
@@ -187,6 +189,7 @@ pub fn grid_infill_toolpaths(
     boundary_distance: &GeodesicField,
     minimum_boundary_distance_mm: f64,
     spacing_mm: f64,
+    angle_radians: f64,
     options: ContourOptions,
 ) -> Result<Vec<Toolpath>, String> {
     if boundary_distance.distances.len() != mesh.vertices.len() {
@@ -198,23 +201,32 @@ pub fn grid_infill_toolpaths(
     if spacing_mm <= 0.0 || !spacing_mm.is_finite() {
         return Err("infill spacing must be finite and greater than zero".to_string());
     }
+    if !angle_radians.is_finite() {
+        return Err("infill angle must be finite".to_string());
+    }
 
-    let Some((min_x, max_x)) = mesh_x_bounds(mesh) else {
+    let normal = infill_line_normal(angle_radians);
+    let Some((min_coordinate, max_coordinate)) = mesh_projected_bounds(mesh, normal) else {
         return Ok(Vec::new());
     };
-    let first_x = (min_x / spacing_mm).ceil() as isize;
-    let last_x = (max_x / spacing_mm).floor() as isize;
+    let first_line = (min_coordinate / spacing_mm).ceil() as isize;
+    let last_line = (max_coordinate / spacing_mm).floor() as isize;
     let mut segments = Vec::new();
 
-    for line in first_x..=last_x {
-        let x = line as f64 * spacing_mm;
+    for line in first_line..=last_line {
+        let line_coordinate = line as f64 * spacing_mm;
         for triangle in &mesh.triangles {
             validate_triangle(mesh, *triangle)?;
-            if let Some(segment) =
-                triangle_infill_segment(mesh, &boundary_distance.distances, *triangle, x).and_then(
-                    |segment| clip_segment_by_minimum_value(segment, minimum_boundary_distance_mm),
-                )
-            {
+            if let Some(segment) = triangle_infill_segment(
+                mesh,
+                &boundary_distance.distances,
+                *triangle,
+                normal,
+                line_coordinate,
+            )
+            .and_then(|segment| {
+                clip_segment_by_minimum_value(segment, minimum_boundary_distance_mm)
+            }) {
                 segments.push(segment);
             }
         }
@@ -306,7 +318,8 @@ fn triangle_infill_segment(
     mesh: &Mesh,
     values: &[f64],
     triangle: [usize; 3],
-    x_value: f64,
+    line_normal: Vec3,
+    line_coordinate: f64,
 ) -> Option<[ScalarPoint; 2]> {
     let edges = [
         [triangle[0], triangle[1]],
@@ -320,17 +333,22 @@ fn triangle_infill_segment(
         let position_b = mesh.vertices[b];
         let value_a = values[a];
         let value_b = values[b];
-        if !value_a.is_finite() || !value_b.is_finite() || position_a.x == position_b.x {
+        let coordinate_a = planar_dot(position_a, line_normal);
+        let coordinate_b = planar_dot(position_b, line_normal);
+        if !value_a.is_finite()
+            || !value_b.is_finite()
+            || (coordinate_a - coordinate_b).abs() <= 1.0e-12
+        {
             continue;
         }
 
-        let min_x = position_a.x.min(position_b.x);
-        let max_x = position_a.x.max(position_b.x);
-        if x_value < min_x || x_value >= max_x {
+        let min_coordinate = coordinate_a.min(coordinate_b);
+        let max_coordinate = coordinate_a.max(coordinate_b);
+        if line_coordinate < min_coordinate || line_coordinate >= max_coordinate {
             continue;
         }
 
-        let t = (x_value - position_a.x) / (position_b.x - position_a.x);
+        let t = (line_coordinate - coordinate_a) / (coordinate_b - coordinate_a);
         points.push(ScalarPoint {
             position: lerp(position_a, position_b, t),
             value: value_a + (value_b - value_a) * t,
@@ -501,16 +519,30 @@ fn dedup_scalar_points(points: &mut Vec<ScalarPoint>) {
     }
 }
 
-fn mesh_x_bounds(mesh: &Mesh) -> Option<(f64, f64)> {
+fn mesh_projected_bounds(mesh: &Mesh, normal: Vec3) -> Option<(f64, f64)> {
     let mut vertices = mesh.vertices.iter().copied();
     let first = vertices.next()?;
-    let mut min_x = first.x;
-    let mut max_x = first.x;
+    let first_coordinate = planar_dot(first, normal);
+    let mut min_coordinate = first_coordinate;
+    let mut max_coordinate = first_coordinate;
     for vertex in vertices {
-        min_x = min_x.min(vertex.x);
-        max_x = max_x.max(vertex.x);
+        let coordinate = planar_dot(vertex, normal);
+        min_coordinate = min_coordinate.min(coordinate);
+        max_coordinate = max_coordinate.max(coordinate);
     }
-    Some((min_x, max_x))
+    Some((min_coordinate, max_coordinate))
+}
+
+fn infill_line_normal(angle_radians: f64) -> Vec3 {
+    Vec3 {
+        x: -angle_radians.sin(),
+        y: angle_radians.cos(),
+        z: 0.0,
+    }
+}
+
+fn planar_dot(position: Vec3, normal: Vec3) -> f64 {
+    position.x * normal.x + position.y * normal.y
 }
 
 fn lerp(a: Vec3, b: Vec3, t: f64) -> Vec3 {
@@ -709,11 +741,23 @@ mod tests {
             distances: vec![0.0, 0.0, 0.0, 0.0, 1.0],
         };
 
-        let paths =
-            grid_infill_toolpaths(&mesh, &distance, 0.5, 1.0, ContourOptions::default()).unwrap();
+        let paths = grid_infill_toolpaths(
+            &mesh,
+            &distance,
+            0.5,
+            1.0,
+            std::f64::consts::FRAC_PI_4,
+            ContourOptions::default(),
+        )
+        .unwrap();
 
         assert!(!paths.is_empty());
         assert!(paths.iter().all(|path| path.role == ToolpathRole::Infill));
         assert!(paths.iter().all(|path| path.length_mm() > 0.0));
+        assert!(paths.iter().any(|path| {
+            let first = path.points.first().unwrap().position;
+            let last = path.points.last().unwrap().position;
+            ((last.y - first.y).abs() - (last.x - first.x).abs()).abs() < 1.0e-9
+        }));
     }
 }
