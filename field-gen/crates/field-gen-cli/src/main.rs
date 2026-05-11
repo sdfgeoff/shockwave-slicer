@@ -305,20 +305,20 @@ mod tests {
                 y: 0.0,
                 z: 0.0,
             },
-            dims: [1, 1, 3],
+            dims: [2, 2, 3],
             voxel_size: Vec3 {
                 x: 1.0,
                 y: 1.0,
                 z: 1.0,
             },
             actual_size: Vec3 {
-                x: 1.0,
-                y: 1.0,
+                x: 2.0,
+                y: 2.0,
                 z: 3.0,
             },
         };
         let field = Field {
-            distances: vec![0.0, 2.0, 4.0],
+            distances: vec![0.0, 0.0, 0.0, 0.0, 2.0, 2.0, 2.0, 2.0, 4.0, 4.0, 4.0, 4.0],
             max_distance: 4.0,
         };
 
@@ -374,7 +374,7 @@ mod tests {
         )
         .unwrap_err();
 
-        assert!(error.contains("field gradient is invalid"));
+        assert!(error.contains("field gradient is"));
     }
 }
 
@@ -698,7 +698,7 @@ fn local_layer_height(
     position: Vec3,
     iso_spacing: f64,
 ) -> Result<f64, String> {
-    let Some(gradient) = field_gradient_at_nearest_voxel(field, grid, position) else {
+    let Some(gradient) = field_gradient_at_position(field, grid, position) else {
         return Err(format!(
             "field gradient is undefined at path point ({:.6}, {:.6}, {:.6})",
             position.x, position.y, position.z
@@ -724,67 +724,78 @@ fn local_layer_height(
     }
 }
 
-fn field_gradient_at_nearest_voxel(field: &Field, grid: Grid, position: Vec3) -> Option<Vec3> {
+fn field_gradient_at_position(field: &Field, grid: Grid, position: Vec3) -> Option<Vec3> {
     if field.distances.len() != grid.voxel_count() {
         return None;
     }
-    let coords = nearest_voxel_coords(grid, position);
-    Some(Vec3 {
-        x: axis_gradient(field, grid, coords, 0).unwrap_or(0.0),
-        y: axis_gradient(field, grid, coords, 1).unwrap_or(0.0),
-        z: axis_gradient(field, grid, coords, 2).unwrap_or(0.0),
-    })
-}
-
-fn nearest_voxel_coords(grid: Grid, position: Vec3) -> [usize; 3] {
-    [
-        nearest_voxel_axis(position.x, grid.origin.x, grid.voxel_size.x, grid.dims[0]),
-        nearest_voxel_axis(position.y, grid.origin.y, grid.voxel_size.y, grid.dims[1]),
-        nearest_voxel_axis(position.z, grid.origin.z, grid.voxel_size.z, grid.dims[2]),
-    ]
-}
-
-fn nearest_voxel_axis(position: f64, origin: f64, voxel_size: f64, dim: usize) -> usize {
-    let voxel = ((position - origin) / voxel_size - 0.5).round();
-    voxel.clamp(0.0, dim.saturating_sub(1) as f64) as usize
-}
-
-fn axis_gradient(field: &Field, grid: Grid, coords: [usize; 3], axis: usize) -> Option<f64> {
-    let center = field.distances[grid.index(coords[0], coords[1], coords[2])];
-    if !center.is_finite() {
+    if grid.dims.iter().any(|dim| *dim < 2) {
+        return None;
+    }
+    let (x, u) = cell_axis(position.x, grid.origin.x, grid.voxel_size.x, grid.dims[0]);
+    let (y, v) = cell_axis(position.y, grid.origin.y, grid.voxel_size.y, grid.dims[1]);
+    let (z, w) = cell_axis(position.z, grid.origin.z, grid.voxel_size.z, grid.dims[2]);
+    let values = cell_values(field, grid, x, y, z);
+    if values.iter().any(|value| !value.is_finite()) {
         return None;
     }
 
-    let mut minus = coords;
-    let mut plus = coords;
-    let has_minus = coords[axis] > 0;
-    let has_plus = coords[axis] + 1 < grid.dims[axis];
-    if has_minus {
-        minus[axis] -= 1;
-    }
-    if has_plus {
-        plus[axis] += 1;
-    }
+    let gradient = trilinear_gradient(values, [u, v, w]);
+    Some(Vec3 {
+        x: gradient[0] / grid.voxel_size.x,
+        y: gradient[1] / grid.voxel_size.y,
+        z: gradient[2] / grid.voxel_size.z,
+    })
+}
 
-    let minus_value = has_minus
-        .then(|| field.distances[grid.index(minus[0], minus[1], minus[2])])
-        .filter(|value| value.is_finite());
-    let plus_value = has_plus
-        .then(|| field.distances[grid.index(plus[0], plus[1], plus[2])])
-        .filter(|value| value.is_finite());
-    let spacing = match axis {
-        0 => grid.voxel_size.x,
-        1 => grid.voxel_size.y,
-        2 => grid.voxel_size.z,
-        _ => unreachable!(),
-    };
+fn cell_axis(position: f64, origin: f64, voxel_size: f64, dim: usize) -> (usize, f64) {
+    let coordinate = (position - origin) / voxel_size - 0.5;
+    let cell = coordinate.floor().clamp(0.0, dim.saturating_sub(2) as f64) as usize;
+    let local = (coordinate - cell as f64).clamp(0.0, 1.0);
+    (cell, local)
+}
 
-    match (minus_value, plus_value) {
-        (Some(minus), Some(plus)) => Some((plus - minus) / (2.0 * spacing)),
-        (Some(minus), None) => Some((center - minus) / spacing),
-        (None, Some(plus)) => Some((plus - center) / spacing),
-        (None, None) => None,
-    }
+fn cell_values(field: &Field, grid: Grid, x: usize, y: usize, z: usize) -> [f64; 8] {
+    [
+        field.distances[grid.index(x, y, z)],
+        field.distances[grid.index(x + 1, y, z)],
+        field.distances[grid.index(x, y + 1, z)],
+        field.distances[grid.index(x + 1, y + 1, z)],
+        field.distances[grid.index(x, y, z + 1)],
+        field.distances[grid.index(x + 1, y, z + 1)],
+        field.distances[grid.index(x, y + 1, z + 1)],
+        field.distances[grid.index(x + 1, y + 1, z + 1)],
+    ]
+}
+
+fn trilinear_gradient(values: [f64; 8], u: [f64; 3]) -> [f64; 3] {
+    let [x, y, z] = u;
+
+    let dx00 = values[1] - values[0];
+    let dx10 = values[3] - values[2];
+    let dx01 = values[5] - values[4];
+    let dx11 = values[7] - values[6];
+    let dx0 = dx00 * (1.0 - y) + dx10 * y;
+    let dx1 = dx01 * (1.0 - y) + dx11 * y;
+
+    let dy00 = values[2] - values[0];
+    let dy10 = values[3] - values[1];
+    let dy01 = values[6] - values[4];
+    let dy11 = values[7] - values[5];
+    let dy0 = dy00 * (1.0 - x) + dy10 * x;
+    let dy1 = dy01 * (1.0 - x) + dy11 * x;
+
+    let dz00 = values[4] - values[0];
+    let dz10 = values[5] - values[1];
+    let dz01 = values[6] - values[2];
+    let dz11 = values[7] - values[3];
+    let dz0 = dz00 * (1.0 - x) + dz10 * x;
+    let dz1 = dz01 * (1.0 - x) + dz11 * x;
+
+    [
+        dx0 * (1.0 - z) + dx1 * z,
+        dy0 * (1.0 - z) + dy1 * z,
+        dz0 * (1.0 - y) + dz1 * y,
+    ]
 }
 
 fn clip_isosurfaces_to_solid(surfaces: &IsosurfaceSet, triangles: &[Triangle]) -> IsosurfaceSet {
