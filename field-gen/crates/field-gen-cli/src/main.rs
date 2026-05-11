@@ -331,6 +331,7 @@ mod tests {
                 z: 1.5,
             },
             1.0,
+            2.0,
         )
         .unwrap();
 
@@ -371,10 +372,58 @@ mod tests {
                 z: 0.5,
             },
             1.0,
+            0.0,
         )
         .unwrap_err();
 
         assert!(error.contains("field gradient is"));
+    }
+
+    #[test]
+    fn local_layer_height_searches_neighboring_cells_for_surface_gradient() {
+        let grid = Grid {
+            origin: Vec3 {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            },
+            dims: [3, 2, 2],
+            voxel_size: Vec3 {
+                x: 1.0,
+                y: 1.0,
+                z: 1.0,
+            },
+            actual_size: Vec3 {
+                x: 3.0,
+                y: 2.0,
+                z: 2.0,
+            },
+        };
+        let mut distances = vec![1.0; grid.voxel_count()];
+        for z in 0..grid.dims[2] {
+            for y in 0..grid.dims[1] {
+                distances[grid.index(2, y, z)] = 2.0;
+            }
+        }
+        let field = Field {
+            distances,
+            max_distance: 2.0,
+        };
+
+        let height = local_layer_height(
+            &field,
+            grid,
+            Vec3 {
+                x: 0.9,
+                y: 0.5,
+                z: 0.5,
+            },
+            1.0,
+            1.0,
+        )
+        .unwrap();
+
+        assert!((height - 1.0).abs() < 1.0e-12);
     }
 }
 
@@ -658,7 +707,7 @@ fn toolpaths_from_isosurfaces(
                 infill_angle,
                 options,
             )?;
-            apply_local_layer_heights(&mut layer, field, grid, config.iso_spacing)?;
+            apply_local_layer_heights(&mut layer, field, grid, config.iso_spacing, surface.value)?;
             Ok(layer)
         })
         .collect()
@@ -683,10 +732,12 @@ fn apply_local_layer_heights(
     field: &Field,
     grid: Grid,
     iso_spacing: f64,
+    field_value: f64,
 ) -> Result<(), String> {
     for path in &mut layer.paths {
         for point in &mut path.points {
-            point.layer_height_mm = local_layer_height(field, grid, point.position, iso_spacing)?;
+            point.layer_height_mm =
+                local_layer_height(field, grid, point.position, iso_spacing, field_value)?;
         }
     }
     Ok(())
@@ -697,8 +748,9 @@ fn local_layer_height(
     grid: Grid,
     position: Vec3,
     iso_spacing: f64,
+    field_value: f64,
 ) -> Result<f64, String> {
-    let Some(gradient) = field_gradient_at_position(field, grid, position) else {
+    let Some(gradient) = field_gradient_near_position(field, grid, position, field_value) else {
         return Err(format!(
             "field gradient is undefined at path point ({:.6}, {:.6}, {:.6})",
             position.x, position.y, position.z
@@ -707,9 +759,12 @@ fn local_layer_height(
     let gradient_length =
         (gradient.x * gradient.x + gradient.y * gradient.y + gradient.z * gradient.z).sqrt();
     if gradient_length <= 1.0e-9 || !gradient_length.is_finite() {
+        let diagnostic = field_sample_diagnostic(field, grid, position)
+            .map(|text| format!("; {text}"))
+            .unwrap_or_default();
         return Err(format!(
-            "field gradient is invalid at path point ({:.6}, {:.6}, {:.6}): gradient=({:.6}, {:.6}, {:.6})",
-            position.x, position.y, position.z, gradient.x, gradient.y, gradient.z
+            "field gradient is invalid at path point ({:.6}, {:.6}, {:.6}): gradient=({:.6}, {:.6}, {:.6}){}",
+            position.x, position.y, position.z, gradient.x, gradient.y, gradient.z, diagnostic
         ));
     }
 
@@ -724,7 +779,25 @@ fn local_layer_height(
     }
 }
 
-fn field_gradient_at_position(field: &Field, grid: Grid, position: Vec3) -> Option<Vec3> {
+fn field_sample_diagnostic(field: &Field, grid: Grid, position: Vec3) -> Option<String> {
+    if field.distances.len() != grid.voxel_count() || grid.dims.iter().any(|dim| *dim < 2) {
+        return None;
+    }
+    let (x, u) = cell_axis(position.x, grid.origin.x, grid.voxel_size.x, grid.dims[0]);
+    let (y, v) = cell_axis(position.y, grid.origin.y, grid.voxel_size.y, grid.dims[1]);
+    let (z, w) = cell_axis(position.z, grid.origin.z, grid.voxel_size.z, grid.dims[2]);
+    let values = cell_values(field, grid, x, y, z);
+    Some(format!(
+        "cell=({x},{y},{z}) local=({u:.6},{v:.6},{w:.6}) values={values:?}"
+    ))
+}
+
+fn field_gradient_near_position(
+    field: &Field,
+    grid: Grid,
+    position: Vec3,
+    target_value: f64,
+) -> Option<Vec3> {
     if field.distances.len() != grid.voxel_count() {
         return None;
     }
@@ -734,17 +807,113 @@ fn field_gradient_at_position(field: &Field, grid: Grid, position: Vec3) -> Opti
     let (x, u) = cell_axis(position.x, grid.origin.x, grid.voxel_size.x, grid.dims[0]);
     let (y, v) = cell_axis(position.y, grid.origin.y, grid.voxel_size.y, grid.dims[1]);
     let (z, w) = cell_axis(position.z, grid.origin.z, grid.voxel_size.z, grid.dims[2]);
+    if let Some(gradient) = field_gradient_in_cell(field, grid, x, y, z, [u, v, w])
+        .filter(|gradient| gradient_length(*gradient) > 1.0e-9)
+    {
+        return Some(gradient);
+    }
+
+    let mut best = None;
+    for candidate_z in z.saturating_sub(1)..=(z + 1).min(grid.dims[2] - 2) {
+        for candidate_y in y.saturating_sub(1)..=(y + 1).min(grid.dims[1] - 2) {
+            for candidate_x in x.saturating_sub(1)..=(x + 1).min(grid.dims[0] - 2) {
+                let local =
+                    local_position_in_cell(position, grid, candidate_x, candidate_y, candidate_z);
+                let Some((value, gradient)) = field_value_and_gradient_in_cell(
+                    field,
+                    grid,
+                    candidate_x,
+                    candidate_y,
+                    candidate_z,
+                    local,
+                ) else {
+                    continue;
+                };
+                let length = gradient_length(gradient);
+                if length <= 1.0e-9 || !length.is_finite() {
+                    continue;
+                }
+                let clamped_position =
+                    position_from_cell_local(grid, candidate_x, candidate_y, candidate_z, local);
+                let distance_to_cell = squared_distance(position, clamped_position);
+                let value_error = (value - target_value).abs();
+                let score = value_error
+                    + distance_to_cell.sqrt()
+                        / grid
+                            .voxel_size
+                            .x
+                            .max(grid.voxel_size.y)
+                            .max(grid.voxel_size.z);
+                match best {
+                    Some((best_score, _)) if score >= best_score => {}
+                    _ => best = Some((score, gradient)),
+                }
+            }
+        }
+    }
+
+    best.map(|(_, gradient)| gradient)
+}
+
+fn field_gradient_in_cell(
+    field: &Field,
+    grid: Grid,
+    x: usize,
+    y: usize,
+    z: usize,
+    local: [f64; 3],
+) -> Option<Vec3> {
+    field_value_and_gradient_in_cell(field, grid, x, y, z, local).map(|(_, gradient)| gradient)
+}
+
+fn field_value_and_gradient_in_cell(
+    field: &Field,
+    grid: Grid,
+    x: usize,
+    y: usize,
+    z: usize,
+    local: [f64; 3],
+) -> Option<(f64, Vec3)> {
     let values = cell_values(field, grid, x, y, z);
     if values.iter().any(|value| !value.is_finite()) {
         return None;
     }
-
-    let gradient = trilinear_gradient(values, [u, v, w]);
-    Some(Vec3 {
+    let value = trilinear_value(values, local);
+    let gradient = trilinear_gradient(values, local);
+    let gradient = Vec3 {
         x: gradient[0] / grid.voxel_size.x,
         y: gradient[1] / grid.voxel_size.y,
         z: gradient[2] / grid.voxel_size.z,
-    })
+    };
+    Some((value, gradient))
+}
+
+fn local_position_in_cell(position: Vec3, grid: Grid, x: usize, y: usize, z: usize) -> [f64; 3] {
+    let base = position_from_cell_local(grid, x, y, z, [0.0, 0.0, 0.0]);
+    [
+        ((position.x - base.x) / grid.voxel_size.x).clamp(0.0, 1.0),
+        ((position.y - base.y) / grid.voxel_size.y).clamp(0.0, 1.0),
+        ((position.z - base.z) / grid.voxel_size.z).clamp(0.0, 1.0),
+    ]
+}
+
+fn position_from_cell_local(grid: Grid, x: usize, y: usize, z: usize, local: [f64; 3]) -> Vec3 {
+    Vec3 {
+        x: grid.origin.x + (x as f64 + local[0] + 0.5) * grid.voxel_size.x,
+        y: grid.origin.y + (y as f64 + local[1] + 0.5) * grid.voxel_size.y,
+        z: grid.origin.z + (z as f64 + local[2] + 0.5) * grid.voxel_size.z,
+    }
+}
+
+fn squared_distance(a: Vec3, b: Vec3) -> f64 {
+    let dx = b.x - a.x;
+    let dy = b.y - a.y;
+    let dz = b.z - a.z;
+    dx * dx + dy * dy + dz * dz
+}
+
+fn gradient_length(gradient: Vec3) -> f64 {
+    (gradient.x * gradient.x + gradient.y * gradient.y + gradient.z * gradient.z).sqrt()
 }
 
 fn cell_axis(position: f64, origin: f64, voxel_size: f64, dim: usize) -> (usize, f64) {
@@ -765,6 +934,17 @@ fn cell_values(field: &Field, grid: Grid, x: usize, y: usize, z: usize) -> [f64;
         field.distances[grid.index(x, y + 1, z + 1)],
         field.distances[grid.index(x + 1, y + 1, z + 1)],
     ]
+}
+
+fn trilinear_value(values: [f64; 8], u: [f64; 3]) -> f64 {
+    let [x, y, z] = u;
+    let c00 = values[0] * (1.0 - x) + values[1] * x;
+    let c10 = values[2] * (1.0 - x) + values[3] * x;
+    let c01 = values[4] * (1.0 - x) + values[5] * x;
+    let c11 = values[6] * (1.0 - x) + values[7] * x;
+    let c0 = c00 * (1.0 - y) + c10 * y;
+    let c1 = c01 * (1.0 - y) + c11 * y;
+    c0 * (1.0 - z) + c1 * z
 }
 
 fn trilinear_gradient(values: [f64; 8], u: [f64; 3]) -> [f64; 3] {
