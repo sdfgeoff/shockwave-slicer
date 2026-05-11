@@ -37,6 +37,7 @@ pub struct Config {
     pub extrusion_width_mm: f64,
     pub nominal_layer_height_mm: f64,
     pub filament_diameter_mm: f64,
+    pub infill_spacing_mm: Option<f64>,
 }
 
 pub fn parse_args(args: Vec<String>) -> Result<Config, String> {
@@ -66,6 +67,7 @@ pub fn parse_args(args: Vec<String>) -> Result<Config, String> {
     let mut extrusion_width_mm = 0.4_f64;
     let mut nominal_layer_height_mm = 0.2_f64;
     let mut filament_diameter_mm = 1.75_f64;
+    let mut infill_spacing_mm = Some(4.0_f64);
     let mut index = 1;
 
     while index < args.len() {
@@ -150,6 +152,11 @@ pub fn parse_args(args: Vec<String>) -> Result<Config, String> {
                 index += 1;
                 filament_diameter_mm = parse_positive_number("--filament-diameter", &args, index)?;
             }
+            "--infill-spacing" => {
+                index += 1;
+                let spacing = parse_non_negative_number("--infill-spacing", &args, index)?;
+                infill_spacing_mm = (spacing > 0.0).then_some(spacing);
+            }
             "--output" | "-o" => {
                 index += 1;
                 output_prefix = args
@@ -196,6 +203,7 @@ pub fn parse_args(args: Vec<String>) -> Result<Config, String> {
         extrusion_width_mm,
         nominal_layer_height_mm,
         filament_diameter_mm,
+        infill_spacing_mm,
     })
 }
 
@@ -279,7 +287,7 @@ fn parse_angle_degrees(flag: &str, args: &[String], index: usize) -> Result<f64,
 }
 
 fn usage() -> String {
-    "usage: field-gen <input.stl> --voxel <x-mm> <y-mm> <z-mm> [--size <x-mm> <y-mm> <z-mm>] [--padding-voxels <n>] [--origin <x-mm> <y-mm> <z-mm>] [--field] [--field-method <anisotropic|trapezoid>] [--field-rate <x> <y> <z>] [--kernel <kernel.json>] [--max-unreached-below <mm>] [--unreached-cone-angle <degrees>] [--iso-spacing <distance>] [--gcode] [--wall-count <n>] [--extrusion-width <mm>] [--nominal-layer-height <mm>] [--filament-diameter <mm>] [--output <prefix>]\n\
+    "usage: field-gen <input.stl> --voxel <x-mm> <y-mm> <z-mm> [--size <x-mm> <y-mm> <z-mm>] [--padding-voxels <n>] [--origin <x-mm> <y-mm> <z-mm>] [--field] [--field-method <anisotropic|trapezoid>] [--field-rate <x> <y> <z>] [--kernel <kernel.json>] [--max-unreached-below <mm>] [--unreached-cone-angle <degrees>] [--iso-spacing <distance>] [--gcode] [--wall-count <n>] [--extrusion-width <mm>] [--nominal-layer-height <mm>] [--filament-diameter <mm>] [--infill-spacing <mm>] [--output <prefix>]\n\
 \n\
 STL coordinates are assumed to be millimeters. If --size is provided, it is treated as a maximum grid size.\n\
 By default, the grid fits the STL bounds plus 3 voxels of padding on each side.\n\
@@ -289,9 +297,9 @@ By default, the grid fits the STL bounds plus 3 voxels of padding on each side.\
 --max-unreached-below defaults to 5mm and prevents reaching high voxels while lower occupied voxels remain unreached.\n\
 --unreached-cone-angle defaults to 80 degrees from vertical and reserves access cones above unreached occupied voxels. Use 0 to disable this constraint.\n\
 --iso-spacing controls the spacing between exported isosurface levels when --field is enabled.\n\
---gcode writes perimeter-only Marlin G-code from clipped isosurfaces and implies --field.\n\
+--gcode writes experimental Marlin G-code from clipped isosurfaces and implies --field.\n\
 --wall-count defaults to 2 when --gcode is enabled.\n\
---extrusion-width defaults to 0.4mm, --nominal-layer-height defaults to 0.2mm, and --filament-diameter defaults to 1.75mm.\n\
+--extrusion-width defaults to 0.4mm, --nominal-layer-height defaults to 0.2mm, --filament-diameter defaults to 1.75mm, and --infill-spacing defaults to 4mm. Use --infill-spacing 0 to disable infill.\n\
 Voxel size takes priority: grid dimensions are ceil(size / voxel), so actual size may expand slightly."
         .to_string()
 }

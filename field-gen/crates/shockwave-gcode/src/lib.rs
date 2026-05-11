@@ -45,9 +45,30 @@ pub fn write_marlin_gcode(
         output.push_str(&format!(";LAYER:{layer_index}\n"));
         output.push_str(&format!("; layer field_value={:.6}\n", layer.field_value));
         let mut current_role = None;
-        for path in &layer.paths {
+        let mut current_position: Option<Vec3> = None;
+        let travel_z = layer_travel_z(layer, config.coordinate_offset);
+        for path_index in ordered_path_indices(layer) {
+            let path = &layer.paths[path_index];
             if path.points.is_empty() {
                 continue;
+            }
+
+            let first = offset_position(path.points[0].position, config.coordinate_offset);
+            if let Some(current) = current_position
+                && path.role != ToolpathRole::Travel
+            {
+                if current_role != Some(ToolpathRole::Travel) {
+                    output.push_str(";TYPE:Travel\n");
+                    current_role = Some(ToolpathRole::Travel);
+                }
+                output.push_str(&format!(
+                    "G0 X{:.5} Y{:.5} Z{:.5} F{:.0}\n",
+                    current.x, current.y, travel_z, config.travel_feedrate_mm_min
+                ));
+                output.push_str(&format!(
+                    "G0 X{:.5} Y{:.5} Z{:.5} F{:.0}\n",
+                    first.x, first.y, travel_z, config.travel_feedrate_mm_min
+                ));
             }
 
             if current_role != Some(path.role) {
@@ -55,13 +76,13 @@ pub fn write_marlin_gcode(
                 current_role = Some(path.role);
             }
 
-            let first = offset_position(path.points[0].position, config.coordinate_offset);
             output.push_str(&format!(
                 "G0 X{:.5} Y{:.5} Z{:.5} F{:.0}\n",
                 first.x, first.y, first.z, config.travel_feedrate_mm_min
             ));
 
             if path.role == ToolpathRole::Travel {
+                current_position = Some(first);
                 continue;
             }
 
@@ -74,6 +95,7 @@ pub fn write_marlin_gcode(
                     "G1 X{:.5} Y{:.5} Z{:.5} E{:.6} F{:.0}\n",
                     position.x, position.y, position.z, extrusion_mm, config.print_feedrate_mm_min
                 ));
+                current_position = Some(position);
             }
 
             if path.closed && path.points.len() > 2 {
@@ -85,12 +107,66 @@ pub fn write_marlin_gcode(
                     "G1 X{:.5} Y{:.5} Z{:.5} E{:.6} F{:.0}\n",
                     position.x, position.y, position.z, extrusion_mm, config.print_feedrate_mm_min
                 ));
+                current_position = Some(position);
             }
         }
     }
 
     output.push_str("; end of shockwave-layers gcode\n");
     Ok(output)
+}
+
+fn ordered_path_indices(layer: &LayerToolpaths) -> Vec<usize> {
+    let mut remaining: Vec<usize> = (0..layer.paths.len())
+        .filter(|index| !layer.paths[*index].points.is_empty())
+        .collect();
+    let mut ordered = Vec::with_capacity(remaining.len());
+    let mut current = None;
+
+    while !remaining.is_empty() {
+        let next_remaining_index = if let Some(current_position) = current {
+            remaining
+                .iter()
+                .enumerate()
+                .min_by(|(_, a), (_, b)| {
+                    let distance_a =
+                        distance_sq(current_position, layer.paths[**a].points[0].position);
+                    let distance_b =
+                        distance_sq(current_position, layer.paths[**b].points[0].position);
+                    distance_a.total_cmp(&distance_b)
+                })
+                .map(|(index, _)| index)
+                .unwrap_or(0)
+        } else {
+            0
+        };
+        let path_index = remaining.swap_remove(next_remaining_index);
+        let path = &layer.paths[path_index];
+        current = Some(if path.closed {
+            path.points[0].position
+        } else {
+            path.points.last().unwrap().position
+        });
+        ordered.push(path_index);
+    }
+
+    ordered
+}
+
+fn layer_travel_z(layer: &LayerToolpaths, offset: Vec3) -> f64 {
+    layer
+        .paths
+        .iter()
+        .flat_map(|path| path.points.iter())
+        .map(|point| point.position.z + offset.z)
+        .fold(0.0, f64::max)
+}
+
+fn distance_sq(a: Vec3, b: Vec3) -> f64 {
+    let dx = b.x - a.x;
+    let dy = b.y - a.y;
+    let dz = b.z - a.z;
+    dx * dx + dy * dy + dz * dz
 }
 
 pub fn zero_based_coordinate_offset(layers: &[LayerToolpaths]) -> Vec3 {
@@ -237,6 +313,69 @@ mod tests {
         )
         .unwrap();
         assert!(gcode.contains("G0 X0.00000 Y0.00000 Z0.00000"));
+    }
+
+    #[test]
+    fn travels_between_paths_at_highest_layer_point() {
+        let layer = LayerToolpaths {
+            field_value: 1.0,
+            paths: vec![
+                Toolpath {
+                    points: vec![
+                        PathPoint {
+                            position: Vec3 {
+                                x: 0.0,
+                                y: 0.0,
+                                z: 0.2,
+                            },
+                            extrusion_width_mm: 0.4,
+                            layer_height_mm: 0.2,
+                        },
+                        PathPoint {
+                            position: Vec3 {
+                                x: 1.0,
+                                y: 0.0,
+                                z: 0.2,
+                            },
+                            extrusion_width_mm: 0.4,
+                            layer_height_mm: 0.2,
+                        },
+                    ],
+                    role: ToolpathRole::Perimeter,
+                    closed: false,
+                },
+                Toolpath {
+                    points: vec![
+                        PathPoint {
+                            position: Vec3 {
+                                x: 10.0,
+                                y: 0.0,
+                                z: 0.8,
+                            },
+                            extrusion_width_mm: 0.4,
+                            layer_height_mm: 0.2,
+                        },
+                        PathPoint {
+                            position: Vec3 {
+                                x: 11.0,
+                                y: 0.0,
+                                z: 0.8,
+                            },
+                            extrusion_width_mm: 0.4,
+                            layer_height_mm: 0.2,
+                        },
+                    ],
+                    role: ToolpathRole::Perimeter,
+                    closed: false,
+                },
+            ],
+        };
+
+        let gcode = write_marlin_gcode(&[layer], MarlinConfig::default()).unwrap();
+
+        assert!(gcode.contains(";TYPE:Travel"));
+        assert!(gcode.contains("G0 X1.00000 Y0.00000 Z0.80000"));
+        assert!(gcode.contains("G0 X10.00000 Y0.00000 Z0.80000"));
     }
 
     #[test]

@@ -92,12 +92,15 @@ field-gen input.stl --voxel 0.4 0.4 0.4 --field-method trapezoid \
   --extrusion-width 0.4 \
   --nominal-layer-height 0.2 \
   --filament-diameter 1.75 \
+  --infill-spacing 4.0 \
   --output output/prefix
 ```
 
-This currently computes mesh boundary distance on each clipped isosurface, extracts contour-parallel perimeter paths at bead centerline offsets, and writes `output/prefix.gcode`. The number of walls is configurable with `--wall-count` or `WALL_COUNT` in the Makefile. G-code coordinates are shifted so the original STL/model bounds minimum maps to `X=0`, `Y=0`, and `Z=0`.
+This currently computes mesh boundary distance on each clipped isosurface, extracts contour-parallel perimeter paths at bead centerline offsets, adds simple world-space grid infill, and writes `output/prefix.gcode`. The number of walls is configurable with `--wall-count` or `WALL_COUNT` in the Makefile. Infill spacing is configurable with `--infill-spacing` or `INFILL_SPACING`; use `0` to disable infill. G-code coordinates are shifted so the original STL/model bounds minimum maps to `X=0`, `Y=0`, and `Z=0`.
 
-It does not yet generate infill, Arachne-style bead variation, support material, travel optimization, or accurate local non-planar layer-height compensation. Treat it as a pathing integration test, not printer-ready slicer output.
+Extrusion height is estimated per path point from the propagated field gradient as `iso_spacing / |grad(field)|`, falling back to `--nominal-layer-height` where the gradient is unavailable. Travel between paths uses a basic Z-hop to the highest point on the current layer.
+
+It does not yet generate Arachne-style bead variation, support material, robust travel optimization, or mature local non-planar layer-height compensation. Treat it as a pathing integration test, not printer-ready slicer output.
 
 The Makefile generates G-code by default for STLs in `inputs/`:
 
@@ -107,6 +110,7 @@ make voxels
 
 Use `make voxels GCODE=0` to skip G-code output.
 Use `make voxels WALL_COUNT=1` to generate a single wall/perimeter.
+Use `make voxels INFILL_SPACING=0` to disable infill.
 
 ## Metadata
 

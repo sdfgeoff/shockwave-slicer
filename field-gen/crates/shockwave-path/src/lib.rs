@@ -99,6 +99,12 @@ struct Segment {
     b: Vec3,
 }
 
+#[derive(Clone, Copy, Debug)]
+struct ScalarPoint {
+    position: Vec3,
+    value: f64,
+}
+
 pub fn perimeter_toolpaths_from_distance(
     mesh: &Mesh,
     distance: &GeodesicField,
@@ -144,6 +150,79 @@ pub fn perimeter_layer_from_boundary(
     })
 }
 
+pub fn layer_toolpaths_from_boundary(
+    mesh: &Mesh,
+    field_value: f64,
+    wall_offsets_mm: &[f64],
+    infill_spacing_mm: Option<f64>,
+    options: ContourOptions,
+) -> Result<LayerToolpaths, String> {
+    if !field_value.is_finite() {
+        return Err("layer field value must be finite".to_string());
+    }
+
+    let boundary_distance = shockwave_geodesic::distance_from_boundary(mesh)?;
+    let mut paths =
+        perimeter_toolpaths_from_distance(mesh, &boundary_distance, wall_offsets_mm, options)?;
+    if let Some(spacing) = infill_spacing_mm {
+        let minimum_boundary_distance = wall_offsets_mm
+            .last()
+            .copied()
+            .unwrap_or(options.extrusion_width_mm * 0.5)
+            + options.extrusion_width_mm * 0.5;
+        paths.extend(grid_infill_toolpaths(
+            mesh,
+            &boundary_distance,
+            minimum_boundary_distance,
+            spacing,
+            options,
+        )?);
+    }
+
+    Ok(LayerToolpaths { field_value, paths })
+}
+
+pub fn grid_infill_toolpaths(
+    mesh: &Mesh,
+    boundary_distance: &GeodesicField,
+    minimum_boundary_distance_mm: f64,
+    spacing_mm: f64,
+    options: ContourOptions,
+) -> Result<Vec<Toolpath>, String> {
+    if boundary_distance.distances.len() != mesh.vertices.len() {
+        return Err("boundary distance length does not match mesh vertex count".to_string());
+    }
+    if minimum_boundary_distance_mm < 0.0 || !minimum_boundary_distance_mm.is_finite() {
+        return Err("minimum boundary distance must be finite and non-negative".to_string());
+    }
+    if spacing_mm <= 0.0 || !spacing_mm.is_finite() {
+        return Err("infill spacing must be finite and greater than zero".to_string());
+    }
+
+    let Some((min_x, max_x)) = mesh_x_bounds(mesh) else {
+        return Ok(Vec::new());
+    };
+    let first_x = (min_x / spacing_mm).ceil() as isize;
+    let last_x = (max_x / spacing_mm).floor() as isize;
+    let mut segments = Vec::new();
+
+    for line in first_x..=last_x {
+        let x = line as f64 * spacing_mm;
+        for triangle in &mesh.triangles {
+            validate_triangle(mesh, *triangle)?;
+            if let Some(segment) =
+                triangle_infill_segment(mesh, &boundary_distance.distances, *triangle, x).and_then(
+                    |segment| clip_segment_by_minimum_value(segment, minimum_boundary_distance_mm),
+                )
+            {
+                segments.push(segment);
+            }
+        }
+    }
+
+    Ok(join_segments(segments, ToolpathRole::Infill, options))
+}
+
 pub fn contour_toolpaths(
     mesh: &Mesh,
     values: &[f64],
@@ -163,11 +242,7 @@ pub fn contour_toolpaths(
 
     let mut segments = Vec::new();
     for triangle in &mesh.triangles {
-        for vertex in triangle {
-            if *vertex >= mesh.vertices.len() {
-                return Err("mesh triangle references an out-of-bounds vertex".to_string());
-            }
-        }
+        validate_triangle(mesh, *triangle)?;
 
         if let Some(segment) = triangle_contour_segment(mesh, values, *triangle, iso_value) {
             segments.push(segment);
@@ -175,6 +250,15 @@ pub fn contour_toolpaths(
     }
 
     Ok(join_segments(segments, role, options))
+}
+
+fn validate_triangle(mesh: &Mesh, triangle: [usize; 3]) -> Result<(), String> {
+    for vertex in triangle {
+        if vertex >= mesh.vertices.len() {
+            return Err("mesh triangle references an out-of-bounds vertex".to_string());
+        }
+    }
+    Ok(())
 }
 
 fn triangle_contour_segment(
@@ -215,6 +299,84 @@ fn triangle_contour_segment(
         })
     } else {
         None
+    }
+}
+
+fn triangle_infill_segment(
+    mesh: &Mesh,
+    values: &[f64],
+    triangle: [usize; 3],
+    x_value: f64,
+) -> Option<[ScalarPoint; 2]> {
+    let edges = [
+        [triangle[0], triangle[1]],
+        [triangle[1], triangle[2]],
+        [triangle[2], triangle[0]],
+    ];
+    let mut points = Vec::new();
+
+    for [a, b] in edges {
+        let position_a = mesh.vertices[a];
+        let position_b = mesh.vertices[b];
+        let value_a = values[a];
+        let value_b = values[b];
+        if !value_a.is_finite() || !value_b.is_finite() || position_a.x == position_b.x {
+            continue;
+        }
+
+        let min_x = position_a.x.min(position_b.x);
+        let max_x = position_a.x.max(position_b.x);
+        if x_value < min_x || x_value >= max_x {
+            continue;
+        }
+
+        let t = (x_value - position_a.x) / (position_b.x - position_a.x);
+        points.push(ScalarPoint {
+            position: lerp(position_a, position_b, t),
+            value: value_a + (value_b - value_a) * t,
+        });
+    }
+
+    dedup_scalar_points(&mut points);
+    if points.len() == 2 {
+        Some([points[0], points[1]])
+    } else {
+        None
+    }
+}
+
+fn clip_segment_by_minimum_value(segment: [ScalarPoint; 2], minimum: f64) -> Option<Segment> {
+    let [mut a, mut b] = segment;
+    let a_inside = a.value >= minimum;
+    let b_inside = b.value >= minimum;
+    match (a_inside, b_inside) {
+        (true, true) => Some(Segment {
+            a: a.position,
+            b: b.position,
+        }),
+        (false, false) => None,
+        (true, false) => {
+            b = interpolate_scalar_point(a, b, minimum);
+            Some(Segment {
+                a: a.position,
+                b: b.position,
+            })
+        }
+        (false, true) => {
+            a = interpolate_scalar_point(a, b, minimum);
+            Some(Segment {
+                a: a.position,
+                b: b.position,
+            })
+        }
+    }
+}
+
+fn interpolate_scalar_point(a: ScalarPoint, b: ScalarPoint, value: f64) -> ScalarPoint {
+    let t = ((value - a.value) / (b.value - a.value)).clamp(0.0, 1.0);
+    ScalarPoint {
+        position: lerp(a.position, b.position, t),
+        value,
     }
 }
 
@@ -323,6 +485,32 @@ fn dedup_points(points: &mut Vec<Vec3>) {
             index += 1;
         }
     }
+}
+
+fn dedup_scalar_points(points: &mut Vec<ScalarPoint>) {
+    let mut index = 0;
+    while index < points.len() {
+        let duplicate = points[..index]
+            .iter()
+            .any(|point| points_close(point.position, points[index].position, 1.0e-9));
+        if duplicate {
+            points.swap_remove(index);
+        } else {
+            index += 1;
+        }
+    }
+}
+
+fn mesh_x_bounds(mesh: &Mesh) -> Option<(f64, f64)> {
+    let mut vertices = mesh.vertices.iter().copied();
+    let first = vertices.next()?;
+    let mut min_x = first.x;
+    let mut max_x = first.x;
+    for vertex in vertices {
+        min_x = min_x.min(vertex.x);
+        max_x = max_x.max(vertex.x);
+    }
+    Some((min_x, max_x))
 }
 
 fn lerp(a: Vec3, b: Vec3, t: f64) -> Vec3 {
@@ -503,5 +691,29 @@ mod tests {
         assert_eq!(layer.field_value, 4.0);
         assert_eq!(layer.path_count(), 1);
         assert!(layer.estimated_volume_mm3() > 0.0);
+    }
+
+    #[test]
+    fn generates_grid_infill_inside_boundary_distance() {
+        let mesh = Mesh {
+            vertices: vec![
+                vertex(0.0, 0.0, 0.0),
+                vertex(2.0, 0.0, 0.0),
+                vertex(2.0, 2.0, 0.0),
+                vertex(0.0, 2.0, 0.0),
+                vertex(1.0, 1.0, 0.0),
+            ],
+            triangles: vec![[0, 1, 4], [1, 2, 4], [2, 3, 4], [3, 0, 4]],
+        };
+        let distance = GeodesicField {
+            distances: vec![0.0, 0.0, 0.0, 0.0, 1.0],
+        };
+
+        let paths =
+            grid_infill_toolpaths(&mesh, &distance, 0.5, 1.0, ContourOptions::default()).unwrap();
+
+        assert!(!paths.is_empty());
+        assert!(paths.iter().all(|path| path.role == ToolpathRole::Infill));
+        assert!(paths.iter().all(|path| path.length_mm() > 0.0));
     }
 }

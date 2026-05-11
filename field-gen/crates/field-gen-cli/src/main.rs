@@ -16,7 +16,7 @@ use shockwave_iso::{Isosurface, IsosurfaceSet, extract_regular_isosurfaces};
 use shockwave_output::{
     Metadata, MetadataDocument, build_atlas, metadata_json, write_occupancy_bmp, write_ply_binary,
 };
-use shockwave_path::{ContourOptions, LayerToolpaths, perimeter_layer_from_boundary};
+use shockwave_path::{ContourOptions, LayerToolpaths, layer_toolpaths_from_boundary};
 use shockwave_stl::parse_stl;
 use shockwave_voxel::field::{
     AnisotropicEuclideanPropagation, ExplicitKernelPropagation, Field, KernelMove, KernelPathCheck,
@@ -295,6 +295,46 @@ mod tests {
         assert_eq!(offset.y, -2.0);
         assert_eq!(offset.z, 3.5);
     }
+
+    #[test]
+    fn local_layer_height_uses_field_gradient() {
+        let grid = Grid {
+            origin: Vec3 {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            },
+            dims: [1, 1, 3],
+            voxel_size: Vec3 {
+                x: 1.0,
+                y: 1.0,
+                z: 1.0,
+            },
+            actual_size: Vec3 {
+                x: 1.0,
+                y: 1.0,
+                z: 3.0,
+            },
+        };
+        let field = Field {
+            distances: vec![0.0, 2.0, 4.0],
+            max_distance: 4.0,
+        };
+
+        let height = local_layer_height(
+            &field,
+            grid,
+            Vec3 {
+                x: 0.5,
+                y: 0.5,
+                z: 1.5,
+            },
+            1.0,
+            0.2,
+        );
+
+        assert!((height - 0.5).abs() < 1.0e-12);
+    }
 }
 
 fn propagate_and_expand(
@@ -471,7 +511,7 @@ fn write_outputs(
 
             if let Some(gcode_path) = gcode_path.as_ref() {
                 let path_start = Instant::now();
-                let layers = toolpaths_from_isosurfaces(&clipped_mesh, config)?;
+                let layers = toolpaths_from_isosurfaces(&clipped_mesh, config, field, grid)?;
                 log_timing("generate perimeter paths", path_start.elapsed());
                 eprintln!(
                     "timing: generated {} toolpath layers with {} paths",
@@ -549,6 +589,8 @@ fn write_outputs(
 fn toolpaths_from_isosurfaces(
     surfaces: &IsosurfaceSet,
     config: &cli::Config,
+    field: &Field,
+    grid: Grid,
 ) -> Result<Vec<LayerToolpaths>, String> {
     let offsets = perimeter_offsets(config.wall_count, config.extrusion_width_mm);
     let options = ContourOptions {
@@ -562,7 +604,21 @@ fn toolpaths_from_isosurfaces(
         .par_iter()
         .filter(|surface| !surface.mesh.is_empty())
         .map(|surface| {
-            perimeter_layer_from_boundary(&surface.mesh, surface.value, &offsets, options)
+            let mut layer = layer_toolpaths_from_boundary(
+                &surface.mesh,
+                surface.value,
+                &offsets,
+                config.infill_spacing_mm,
+                options,
+            )?;
+            apply_local_layer_heights(
+                &mut layer,
+                field,
+                grid,
+                config.iso_spacing,
+                config.nominal_layer_height_mm,
+            );
+            Ok(layer)
         })
         .collect()
 }
@@ -578,6 +634,108 @@ fn model_floor_coordinate_offset(bounds: Bounds) -> Vec3 {
         x: -bounds.min.x,
         y: -bounds.min.y,
         z: -bounds.min.z,
+    }
+}
+
+fn apply_local_layer_heights(
+    layer: &mut LayerToolpaths,
+    field: &Field,
+    grid: Grid,
+    iso_spacing: f64,
+    fallback_height: f64,
+) {
+    for path in &mut layer.paths {
+        for point in &mut path.points {
+            point.layer_height_mm =
+                local_layer_height(field, grid, point.position, iso_spacing, fallback_height);
+        }
+    }
+}
+
+fn local_layer_height(
+    field: &Field,
+    grid: Grid,
+    position: Vec3,
+    iso_spacing: f64,
+    fallback_height: f64,
+) -> f64 {
+    let Some(gradient) = field_gradient_at_nearest_voxel(field, grid, position) else {
+        return fallback_height;
+    };
+    let gradient_length =
+        (gradient.x * gradient.x + gradient.y * gradient.y + gradient.z * gradient.z).sqrt();
+    if gradient_length <= 1.0e-9 || !gradient_length.is_finite() {
+        return fallback_height;
+    }
+
+    let height = iso_spacing / gradient_length;
+    if height.is_finite() && height > 0.0 {
+        height
+    } else {
+        fallback_height
+    }
+}
+
+fn field_gradient_at_nearest_voxel(field: &Field, grid: Grid, position: Vec3) -> Option<Vec3> {
+    if field.distances.len() != grid.voxel_count() {
+        return None;
+    }
+    let coords = nearest_voxel_coords(grid, position);
+    Some(Vec3 {
+        x: axis_gradient(field, grid, coords, 0).unwrap_or(0.0),
+        y: axis_gradient(field, grid, coords, 1).unwrap_or(0.0),
+        z: axis_gradient(field, grid, coords, 2).unwrap_or(0.0),
+    })
+}
+
+fn nearest_voxel_coords(grid: Grid, position: Vec3) -> [usize; 3] {
+    [
+        nearest_voxel_axis(position.x, grid.origin.x, grid.voxel_size.x, grid.dims[0]),
+        nearest_voxel_axis(position.y, grid.origin.y, grid.voxel_size.y, grid.dims[1]),
+        nearest_voxel_axis(position.z, grid.origin.z, grid.voxel_size.z, grid.dims[2]),
+    ]
+}
+
+fn nearest_voxel_axis(position: f64, origin: f64, voxel_size: f64, dim: usize) -> usize {
+    let voxel = ((position - origin) / voxel_size - 0.5).round();
+    voxel.clamp(0.0, dim.saturating_sub(1) as f64) as usize
+}
+
+fn axis_gradient(field: &Field, grid: Grid, coords: [usize; 3], axis: usize) -> Option<f64> {
+    let center = field.distances[grid.index(coords[0], coords[1], coords[2])];
+    if !center.is_finite() {
+        return None;
+    }
+
+    let mut minus = coords;
+    let mut plus = coords;
+    let has_minus = coords[axis] > 0;
+    let has_plus = coords[axis] + 1 < grid.dims[axis];
+    if has_minus {
+        minus[axis] -= 1;
+    }
+    if has_plus {
+        plus[axis] += 1;
+    }
+
+    let minus_value = has_minus
+        .then(|| field.distances[grid.index(minus[0], minus[1], minus[2])])
+        .filter(|value| value.is_finite());
+    let plus_value = has_plus
+        .then(|| field.distances[grid.index(plus[0], plus[1], plus[2])])
+        .filter(|value| value.is_finite());
+    let spacing = match axis {
+        0 => grid.voxel_size.x,
+        1 => grid.voxel_size.y,
+        2 => grid.voxel_size.z,
+        _ => unreachable!(),
+    };
+
+    match (minus_value, plus_value) {
+        (Some(minus), Some(plus)) => Some((plus - minus) / (2.0 * spacing)),
+        (Some(minus), None) => Some((center - minus) / spacing),
+        (None, Some(plus)) => Some((plus - center) / spacing),
+        (None, None) => None,
     }
 }
 

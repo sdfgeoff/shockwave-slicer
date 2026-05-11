@@ -23,6 +23,7 @@ WALL_COUNT ?= 2
 EXTRUSION_WIDTH ?= 0.4
 NOMINAL_LAYER_HEIGHT ?= 0.2
 FILAMENT_DIAMETER ?= 1.75
+INFILL_SPACING ?= 4
 
 VOXEL_GEN := field-gen/target/release/field-gen
 FIELD_GEN_SOURCES := $(shell find field-gen/crates -type f 2>/dev/null)
@@ -52,7 +53,7 @@ endif
 endif
 GCODE_ARGS :=
 ifneq ($(GCODE),0)
-GCODE_ARGS := --gcode --wall-count $(WALL_COUNT) --extrusion-width $(EXTRUSION_WIDTH) --nominal-layer-height $(NOMINAL_LAYER_HEIGHT) --filament-diameter $(FILAMENT_DIAMETER)
+GCODE_ARGS := --gcode --wall-count $(WALL_COUNT) --extrusion-width $(EXTRUSION_WIDTH) --nominal-layer-height $(NOMINAL_LAYER_HEIGHT) --filament-diameter $(FILAMENT_DIAMETER) --infill-spacing $(INFILL_SPACING)
 endif
 
 .PHONY: all voxels clean list-inputs
