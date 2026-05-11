@@ -95,13 +95,18 @@ field-gen input.stl --voxel 0.4 0.4 0.4 --field-method trapezoid \
   --output output/prefix
 ```
 
-This currently computes mesh boundary distance on each clipped isosurface, extracts contour-parallel perimeter paths at bead centerline offsets, and writes `output/prefix.gcode`. It does not yet generate infill, Arachne-style bead variation, support material, travel optimization, or accurate local non-planar layer-height compensation. Treat it as a pathing integration test, not printer-ready slicer output.
+This currently computes mesh boundary distance on each clipped isosurface, extracts contour-parallel perimeter paths at bead centerline offsets, and writes `output/prefix.gcode`. The number of walls is configurable with `--wall-count` or `WALL_COUNT` in the Makefile. G-code coordinates are shifted so the original STL/model bounds minimum maps to `X=0`, `Y=0`, and `Z=0`.
 
-The Makefile exposes this as:
+It does not yet generate infill, Arachne-style bead variation, support material, travel optimization, or accurate local non-planar layer-height compensation. Treat it as a pathing integration test, not printer-ready slicer output.
+
+The Makefile generates G-code by default for STLs in `inputs/`:
 
 ```bash
-make voxels GCODE=1
+make voxels
 ```
+
+Use `make voxels GCODE=0` to skip G-code output.
+Use `make voxels WALL_COUNT=1` to generate a single wall/perimeter.
 
 ## Metadata
 

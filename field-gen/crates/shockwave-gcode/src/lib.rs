@@ -1,3 +1,4 @@
+use shockwave_core::geometry::Vec3;
 use shockwave_path::{LayerToolpaths, ToolpathRole};
 
 #[derive(Clone, Copy, Debug)]
@@ -5,6 +6,7 @@ pub struct MarlinConfig {
     pub filament_diameter_mm: f64,
     pub travel_feedrate_mm_min: f64,
     pub print_feedrate_mm_min: f64,
+    pub coordinate_offset: Vec3,
 }
 
 impl Default for MarlinConfig {
@@ -13,6 +15,11 @@ impl Default for MarlinConfig {
             filament_diameter_mm: 1.75,
             travel_feedrate_mm_min: 9_000.0,
             print_feedrate_mm_min: 1_800.0,
+            coordinate_offset: Vec3 {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            },
         }
     }
 }
@@ -33,14 +40,22 @@ pub fn write_marlin_gcode(
     output.push_str("G90 ; absolute coordinates\n");
     output.push_str("M82 ; absolute extrusion\n");
 
-    for layer in layers {
+    for (layer_index, layer) in layers.iter().enumerate() {
+        output.push_str(";LAYER_CHANGE\n");
+        output.push_str(&format!(";LAYER:{layer_index}\n"));
         output.push_str(&format!("; layer field_value={:.6}\n", layer.field_value));
+        let mut current_role = None;
         for path in &layer.paths {
             if path.points.is_empty() {
                 continue;
             }
 
-            let first = path.points[0].position;
+            if current_role != Some(path.role) {
+                output.push_str(&format!(";TYPE:{}\n", role_name(path.role)));
+                current_role = Some(path.role);
+            }
+
+            let first = offset_position(path.points[0].position, config.coordinate_offset);
             output.push_str(&format!(
                 "G0 X{:.5} Y{:.5} Z{:.5} F{:.0}\n",
                 first.x, first.y, first.z, config.travel_feedrate_mm_min
@@ -53,28 +68,22 @@ pub fn write_marlin_gcode(
             for segment in path.points.windows(2) {
                 let a = segment[0];
                 let b = segment[1];
+                let position = offset_position(b.position, config.coordinate_offset);
                 extrusion_mm += segment_extrusion_mm(a, b, filament_area);
                 output.push_str(&format!(
                     "G1 X{:.5} Y{:.5} Z{:.5} E{:.6} F{:.0}\n",
-                    b.position.x,
-                    b.position.y,
-                    b.position.z,
-                    extrusion_mm,
-                    config.print_feedrate_mm_min
+                    position.x, position.y, position.z, extrusion_mm, config.print_feedrate_mm_min
                 ));
             }
 
             if path.closed && path.points.len() > 2 {
                 let a = *path.points.last().unwrap();
                 let b = path.points[0];
+                let position = offset_position(b.position, config.coordinate_offset);
                 extrusion_mm += segment_extrusion_mm(a, b, filament_area);
                 output.push_str(&format!(
                     "G1 X{:.5} Y{:.5} Z{:.5} E{:.6} F{:.0}\n",
-                    b.position.x,
-                    b.position.y,
-                    b.position.z,
-                    extrusion_mm,
-                    config.print_feedrate_mm_min
+                    position.x, position.y, position.z, extrusion_mm, config.print_feedrate_mm_min
                 ));
             }
         }
@@ -82,6 +91,54 @@ pub fn write_marlin_gcode(
 
     output.push_str("; end of shockwave-layers gcode\n");
     Ok(output)
+}
+
+pub fn zero_based_coordinate_offset(layers: &[LayerToolpaths]) -> Vec3 {
+    let mut min = Vec3 {
+        x: f64::INFINITY,
+        y: f64::INFINITY,
+        z: f64::INFINITY,
+    };
+
+    for layer in layers {
+        for path in &layer.paths {
+            for point in &path.points {
+                min.x = min.x.min(point.position.x);
+                min.y = min.y.min(point.position.y);
+                min.z = min.z.min(point.position.z);
+            }
+        }
+    }
+
+    if min.x.is_finite() {
+        Vec3 {
+            x: -min.x,
+            y: -min.y,
+            z: -min.z,
+        }
+    } else {
+        Vec3 {
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        }
+    }
+}
+
+fn offset_position(position: Vec3, offset: Vec3) -> Vec3 {
+    Vec3 {
+        x: position.x + offset.x,
+        y: position.y + offset.y,
+        z: position.z + offset.z,
+    }
+}
+
+fn role_name(role: ToolpathRole) -> &'static str {
+    match role {
+        ToolpathRole::Perimeter => "Perimeter",
+        ToolpathRole::Infill => "Infill",
+        ToolpathRole::Travel => "Travel",
+    }
 }
 
 fn segment_extrusion_mm(
@@ -142,7 +199,44 @@ mod tests {
 
         assert!(gcode.contains("G21"));
         assert!(gcode.contains("G1 X10.00000 Y0.00000 Z0.20000 E"));
+        assert!(gcode.contains(";LAYER_CHANGE"));
+        assert!(gcode.contains(";TYPE:Perimeter"));
         assert!(gcode.contains("; end of shockwave-layers gcode"));
+    }
+
+    #[test]
+    fn applies_coordinate_offset_to_make_minimum_z_zero() {
+        let layer = LayerToolpaths {
+            field_value: 1.0,
+            paths: vec![Toolpath {
+                points: vec![PathPoint {
+                    position: Vec3 {
+                        x: -2.0,
+                        y: 3.0,
+                        z: -0.5,
+                    },
+                    extrusion_width_mm: 0.4,
+                    layer_height_mm: 0.2,
+                }],
+                role: ToolpathRole::Travel,
+                closed: false,
+            }],
+        };
+
+        let offset = zero_based_coordinate_offset(std::slice::from_ref(&layer));
+        assert_eq!(offset.x, 2.0);
+        assert_eq!(offset.y, -3.0);
+        assert_eq!(offset.z, 0.5);
+
+        let gcode = write_marlin_gcode(
+            &[layer],
+            MarlinConfig {
+                coordinate_offset: offset,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(gcode.contains("G0 X0.00000 Y0.00000 Z0.00000"));
     }
 
     #[test]

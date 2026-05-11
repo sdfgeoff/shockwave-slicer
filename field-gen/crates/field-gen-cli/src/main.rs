@@ -9,7 +9,7 @@ use cli::{FieldMethod, parse_args};
 use rayon::prelude::*;
 use serde_json::Value;
 use shockwave_clip::{TriangleSolid, clip_mesh_to_solid};
-use shockwave_core::geometry::{Triangle, Vec3, mesh_bounds};
+use shockwave_core::geometry::{Bounds, Triangle, Vec3, mesh_bounds};
 use shockwave_core::grid::{Grid, GridSpec, build_grid};
 use shockwave_gcode::{MarlinConfig, write_marlin_gcode};
 use shockwave_iso::{Isosurface, IsosurfaceSet, extract_regular_isosurfaces};
@@ -275,6 +275,26 @@ mod tests {
         assert!((offsets[1] - 0.6).abs() < 1.0e-12);
         assert!((offsets[2] - 1.0).abs() < 1.0e-12);
     }
+
+    #[test]
+    fn model_floor_offset_uses_original_bounds_minimum() {
+        let offset = model_floor_coordinate_offset(Bounds {
+            min: Vec3 {
+                x: -10.0,
+                y: 2.0,
+                z: -3.5,
+            },
+            max: Vec3 {
+                x: 5.0,
+                y: 8.0,
+                z: 12.0,
+            },
+        });
+
+        assert_eq!(offset.x, 10.0);
+        assert_eq!(offset.y, -2.0);
+        assert_eq!(offset.z, 3.5);
+    }
 }
 
 fn propagate_and_expand(
@@ -464,6 +484,7 @@ fn write_outputs(
                     &layers,
                     MarlinConfig {
                         filament_diameter_mm: config.filament_diameter_mm,
+                        coordinate_offset: model_floor_coordinate_offset(bounds),
                         ..Default::default()
                     },
                 )?;
@@ -550,6 +571,14 @@ fn perimeter_offsets(wall_count: usize, extrusion_width_mm: f64) -> Vec<f64> {
     (0..wall_count)
         .map(|index| (index as f64 + 0.5) * extrusion_width_mm)
         .collect()
+}
+
+fn model_floor_coordinate_offset(bounds: Bounds) -> Vec3 {
+    Vec3 {
+        x: -bounds.min.x,
+        y: -bounds.min.y,
+        z: -bounds.min.z,
+    }
 }
 
 fn clip_isosurfaces_to_solid(surfaces: &IsosurfaceSet, triangles: &[Triangle]) -> IsosurfaceSet {

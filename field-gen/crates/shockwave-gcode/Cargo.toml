@@ -4,7 +4,5 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
-shockwave-path = { path = "../shockwave-path" }
-
-[dev-dependencies]
 shockwave-core = { path = "../shockwave-core" }
+shockwave-path = { path = "../shockwave-path" }
