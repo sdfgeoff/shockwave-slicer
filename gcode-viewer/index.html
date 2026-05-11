@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>GCODE Viewer</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="control-panel">
+      <div class="panel-header">
+        <p class="eyebrow">shockwave-layers</p>
+        <h1>GCODE Viewer</h1>
+        <p class="panel-copy">
+          Load a GCODE file to visualize toolpaths as 3D tubes.
+        </p>
+      </div>
+
+      <section class="panel-section">
+        <label class="file-picker" for="file-input">
+          <span>Load GCODE File</span>
+          <input id="file-input" type="file" accept=".gcode,.gco,.txt">
+        </label>
+        <p class="help-text">You can also drag and drop a GCODE file into the viewport.</p>
+      </section>
+
+      <section class="panel-section">
+        <div class="stats-grid">
+          <div>
+            <span class="stat-label">File</span>
+            <strong id="filename">-</strong>
+          </div>
+          <div>
+            <span class="stat-label">Layers</span>
+            <strong id="num-layers">-</strong>
+          </div>
+          <div>
+            <span class="stat-label">Segments</span>
+            <strong id="total-segments">-</strong>
+          </div>
+          <div>
+            <span class="stat-label">Extrusion</span>
+            <strong id="extrusion-segments">-</strong>
+          </div>
+          <div>
+            <span class="stat-label">Travel</span>
+            <strong id="travel-segments">-</strong>
+          </div>
+          <div>
+            <span class="stat-label">Path Length</span>
+            <strong id="total-length">-</strong>
+          </div>
+          <div>
+            <span class="stat-label">Filament</span>
+            <strong id="total-extrusion">-</strong>
+          </div>
+          <div>
+            <span class="stat-label">Est. Time</span>
+            <strong id="estimated-time">-</strong>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel-section">
+        <label>
+          <span>Layer Filter</span>
+          <div class="range-row">
+            <input id="layer-slider" type="range" min="0" max="0" value="0" disabled>
+            <output id="layer-value" for="layer-slider">-</output>
+          </div>
+        </label>
+        <div style="display:flex; justify-content:space-between; margin-top:4px;">
+          <span class="stat-label" id="layer-min">-</span>
+          <span class="stat-label" id="layer-max">-</span>
+        </div>
+      </section>
+
+      <section class="panel-section">
+        <label>
+          <span>Playback</span>
+        </label>
+        <div class="playback-section">
+          <div class="playback-buttons">
+            <button id="play-btn" type="button" title="Play">▶</button>
+            <button id="pause-btn" type="button" title="Pause">⏸</button>
+            <div class="speed-control">
+              <input id="speed-slider" type="range" min="0.1" max="50" step="0.1" value="1">
+              <span id="speed-value">1.0x</span>
+            </div>
+          </div>
+          <div>
+            <input id="seek-bar" type="range" min="0" max="0" value="0" step="1">
+            <div style="display:flex; justify-content:space-between; margin-top:2px;">
+              <span class="stat-label">Seek</span>
+              <span class="stat-label" id="seek-value">-</span>
+            </div>
+          </div>
+          <div class="button-row">
+            <button id="mode-layer-btn" type="button">By Layer</button>
+            <button id="mode-progressive-btn" type="button">Progressive</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel-section">
+        <label>
+          <span>Camera</span>
+        </label>
+        <div class="triple-button-row">
+          <button id="fit-btn" type="button">Fit</button>
+          <button id="top-btn" type="button">Top</button>
+          <button id="front-btn" type="button">Front</button>
+        </div>
+        <div class="triple-button-row" style="margin-top:8px;">
+          <button id="right-btn" type="button">Right</button>
+          <button id="isometric-btn" type="button">Iso</button>
+          <button id="reset-btn" type="button">Reset</button>
+        </div>
+      </section>
+
+      <section class="panel-section">
+        <p class="help-text">
+          Drag to orbit, scroll to zoom, right-drag to pan.
+        </p>
+      </section>
+    </aside>
+
+    <main class="viewer-panel">
+      <div id="viewport" class="viewport">
+        <canvas id="viewport-canvas"></canvas>
+        <div id="drop-hint" class="drop-hint">
+          Drop a GCODE file here or use the file picker.
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <script type="module" src="js/viewer.js"></script>
+</body>
+</html>
