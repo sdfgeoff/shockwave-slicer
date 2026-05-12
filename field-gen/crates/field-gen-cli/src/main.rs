@@ -311,7 +311,7 @@ mod tests {
     }
 
     #[test]
-    fn model_floor_offset_uses_original_bounds_minimum() {
+    fn model_floor_offset_preserves_model_xy() {
         let offset = model_floor_coordinate_offset(Bounds {
             min: Vec3 {
                 x: -10.0,
@@ -325,8 +325,8 @@ mod tests {
             },
         });
 
-        assert_eq!(offset.x, 10.0);
-        assert_eq!(offset.y, -2.0);
+        assert_eq!(offset.x, 0.0);
+        assert_eq!(offset.y, 0.0);
         assert_eq!(offset.z, 3.5);
     }
 
@@ -809,8 +809,8 @@ fn perimeter_offsets(wall_count: usize, extrusion_width_mm: f64) -> Vec<f64> {
 
 fn model_floor_coordinate_offset(bounds: Bounds) -> Vec3 {
     Vec3 {
-        x: -bounds.min.x,
-        y: -bounds.min.y,
+        x: 0.0,
+        y: 0.0,
         z: -bounds.min.z,
     }
 }
