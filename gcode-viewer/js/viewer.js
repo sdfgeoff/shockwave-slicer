@@ -10,7 +10,7 @@ import { parseGcode, getColorForType } from './gcode-parser.js';
 // --- Constants ---
 const FILAMENT_DIAMETER = 1.75; // mm
 const FILAMENT_AREA = Math.PI * (FILAMENT_DIAMETER / 2) ** 2;
-const RADIUS_SCALE = 2.5; // Visual scale factor to make tubes visible
+const RADIUS_SCALE = 1.0; // Visual scale factor to make tubes visible
 const TRAVEL_RADIUS = 0.05; // mm, very thin for travel moves
 const SEGMENTS_PER_TUBE = 8; // Number of radial segments per tube
 
@@ -246,8 +246,6 @@ function buildGeometry() {
         const volume = FILAMENT_AREA * seg.e;
         const crossSectionArea = volume / length;
         radius = Math.sqrt(crossSectionArea / Math.PI) * RADIUS_SCALE;
-        radius = Math.max(radius, 0.05);
-        radius = Math.min(radius, 5.0);
         segColor = color;
       }
 
