@@ -83,7 +83,9 @@ fn voxelize(
     log_timing("generate occupancy", occupancy_start.elapsed());
 
     let field = if config.field_enabled {
-        Some(propagate_configured_field(config, &occupancy, grid)?)
+        let mut field = propagate_configured_field(config, &occupancy, grid)?;
+        align_field_to_model_floor(&mut field, &occupancy, grid, bounds);
+        Some(field)
     } else {
         None
     };
@@ -119,6 +121,37 @@ fn propagate_configured_field(
             }
         }
     }
+}
+
+fn align_field_to_model_floor(field: &mut Field, occupancy: &[u8], grid: Grid, bounds: Bounds) {
+    let Some(lowest_occupied_z) = lowest_occupied_z(occupancy, grid) else {
+        return;
+    };
+    let lowest_center_z = grid.origin.z + (lowest_occupied_z as f64 + 0.5) * grid.voxel_size.z;
+    let field_offset = lowest_center_z - bounds.min.z;
+    if field_offset <= 0.0 || !field_offset.is_finite() {
+        return;
+    }
+
+    for distance in &mut field.distances {
+        if distance.is_finite() {
+            *distance += field_offset;
+        }
+    }
+    field.max_distance += field_offset;
+}
+
+fn lowest_occupied_z(occupancy: &[u8], grid: Grid) -> Option<usize> {
+    for z in 0..grid.dims[2] {
+        for y in 0..grid.dims[1] {
+            for x in 0..grid.dims[0] {
+                if occupancy[grid.index(x, y, z)] != 0 {
+                    return Some(z);
+                }
+            }
+        }
+    }
+    None
 }
 
 fn trapezoid_propagation(grid: Grid) -> Result<ExplicitKernelPropagation, String> {
@@ -295,6 +328,55 @@ mod tests {
         assert_eq!(offset.x, 10.0);
         assert_eq!(offset.y, -2.0);
         assert_eq!(offset.z, 3.5);
+    }
+
+    #[test]
+    fn field_distances_are_aligned_to_model_floor() {
+        let grid = Grid {
+            origin: Vec3 {
+                x: -1.0,
+                y: -1.0,
+                z: -1.0,
+            },
+            dims: [1, 1, 3],
+            voxel_size: Vec3 {
+                x: 1.0,
+                y: 1.0,
+                z: 1.0,
+            },
+            actual_size: Vec3 {
+                x: 1.0,
+                y: 1.0,
+                z: 3.0,
+            },
+        };
+        let occupancy = vec![0, 1, 1];
+        let mut field = Field {
+            distances: vec![f64::INFINITY, 0.0, 1.0],
+            max_distance: 1.0,
+        };
+
+        align_field_to_model_floor(
+            &mut field,
+            &occupancy,
+            grid,
+            Bounds {
+                min: Vec3 {
+                    x: 0.0,
+                    y: 0.0,
+                    z: 0.0,
+                },
+                max: Vec3 {
+                    x: 1.0,
+                    y: 1.0,
+                    z: 2.0,
+                },
+            },
+        );
+
+        assert_eq!(field.distances[1], 0.5);
+        assert_eq!(field.distances[2], 1.5);
+        assert_eq!(field.max_distance, 1.5);
     }
 
     #[test]

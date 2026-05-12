@@ -39,6 +39,15 @@ pub fn write_marlin_gcode(
     output.push_str("G21 ; millimeters\n");
     output.push_str("G90 ; absolute coordinates\n");
     output.push_str("M82 ; absolute extrusion\n");
+    output.push_str("M190 S60 ; set bed temperature and wait for it to be reached\n");
+    output.push_str("G28 ; home all axes\n");
+    output.push_str("G1 Z5 F5000 ; lift nozzle\n");
+    output.push_str("M109 S215 ; Nozzle temperature\n");
+    output.push('\n');
+    output.push_str("; extrude a small amount of waste material\n");
+    output.push_str("G92 E0\n");
+    output.push_str("G1 E20 F200\n");
+    output.push_str("G92 E0\n");
 
     for (layer_index, layer) in layers.iter().enumerate() {
         output.push_str(";LAYER_CHANGE\n");
@@ -290,6 +299,11 @@ mod tests {
         .unwrap();
 
         assert!(gcode.contains("G21"));
+        assert!(gcode.contains("M190 S60 ; set bed temperature and wait for it to be reached"));
+        assert!(gcode.contains("G28 ; home all axes"));
+        assert!(gcode.contains("G1 Z5 F5000 ; lift nozzle"));
+        assert!(gcode.contains("M109 S215 ; Nozzle temperature"));
+        assert!(gcode.contains("G1 E20 F200"));
         assert!(gcode.contains("G1 X10.00000 Y0.00000 Z0.20000 E"));
         assert!(gcode.contains(";LAYER_CHANGE"));
         assert!(gcode.contains(";TYPE:Perimeter"));
