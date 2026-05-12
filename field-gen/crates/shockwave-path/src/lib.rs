@@ -167,8 +167,9 @@ pub fn layer_toolpaths_from_boundary(
         perimeter_toolpaths_from_distance(mesh, &boundary_distance, wall_offsets_mm, options)?;
     if let Some(spacing) = infill_spacing_mm {
         let minimum_boundary_distance = wall_offsets_mm
-            .last()
+            .iter()
             .copied()
+            .reduce(f64::max)
             .unwrap_or(options.extrusion_width_mm * 0.5)
             + options.extrusion_width_mm * 0.5;
         paths.extend(grid_infill_toolpaths(
@@ -759,5 +760,42 @@ mod tests {
             let last = path.points.last().unwrap().position;
             ((last.y - first.y).abs() - (last.x - first.x).abs()).abs() < 1.0e-9
         }));
+    }
+
+    #[test]
+    fn layer_infill_respects_largest_wall_offset() {
+        let mesh = Mesh {
+            vertices: vec![
+                vertex(0.0, 0.0, 0.0),
+                vertex(2.0, 0.0, 0.0),
+                vertex(2.0, 2.0, 0.0),
+                vertex(0.0, 2.0, 0.0),
+                vertex(1.0, 1.0, 0.0),
+            ],
+            triangles: vec![[0, 1, 4], [1, 2, 4], [2, 3, 4], [3, 0, 4]],
+        };
+
+        let layer = layer_toolpaths_from_boundary(
+            &mesh,
+            1.0,
+            &[0.6, 0.2],
+            Some(1.0),
+            0.0,
+            ContourOptions::default(),
+        )
+        .unwrap();
+
+        let infill_points: Vec<Vec3> = layer
+            .paths
+            .iter()
+            .filter(|path| path.role == ToolpathRole::Infill)
+            .flat_map(|path| path.points.iter().map(|point| point.position))
+            .collect();
+        assert!(!infill_points.is_empty());
+        assert!(
+            infill_points
+                .iter()
+                .all(|point| { (point.x - 1.0).abs() <= 0.45 && (point.y - 1.0).abs() <= 1.0e-12 })
+        );
     }
 }
