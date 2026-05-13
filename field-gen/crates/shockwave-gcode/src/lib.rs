@@ -43,6 +43,7 @@ pub fn write_marlin_gcode(
     output.push_str("G28 ; home all axes\n");
     output.push_str("G1 Z5 F5000 ; lift nozzle\n");
     output.push_str("M109 S215 ; Nozzle temperature\n");
+    output.push_str("M106 ; Turn on fan\n");
     output.push('\n');
     output.push_str("; extrude a small amount of waste material\n");
     output.push_str("G92 E0\n");

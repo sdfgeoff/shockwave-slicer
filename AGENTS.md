@@ -1,4 +1,5 @@
 Good code is maintanable code
+Files above 20kb or about 500 lines are too large and should be split/refactored.
 
 Tests are good. Mocks are bad. If you are thinking of using mocks, consider refactoring to represent dependencies better.
 
