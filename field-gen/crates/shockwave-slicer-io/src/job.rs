@@ -15,7 +15,7 @@ use shockwave_slicer::{
 };
 use shockwave_voxel::field::Field;
 
-use crate::{SliceOutputPaths, write_gcode_atomically};
+use crate::{SliceOutputPaths, load_stl_model, write_gcode_atomically};
 
 #[derive(Clone, Debug)]
 pub struct SliceDebugOutput {
@@ -38,6 +38,18 @@ pub struct SliceJobOutput {
     pub occupied_count: usize,
     pub voxel_count: usize,
     pub triangle_count: usize,
+}
+
+pub fn run_slice_job(
+    request: &SliceJobRequest,
+    settings: &SliceSettings,
+    progress: &mut impl FnMut(SliceProgress),
+    timing: &mut impl FnMut(&str, Duration),
+) -> Result<SliceJobOutput, String> {
+    let load_start = Instant::now();
+    let triangles = load_stl_model(&request.input)?;
+    timing("load stl", load_start.elapsed());
+    run_slice_debug_outputs(request, settings, &triangles, progress, timing)
 }
 
 pub fn run_slice_debug_outputs(

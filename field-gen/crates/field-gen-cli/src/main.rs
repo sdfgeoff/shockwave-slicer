@@ -8,11 +8,8 @@ use std::time::{Duration, Instant};
 use cli::parse_args;
 use serde_json::Value;
 use shockwave_config::Dimensions3;
-use shockwave_math::geometry::Triangle;
 use shockwave_slicer::{FieldPropagation, SliceProgress, SliceSettings};
-use shockwave_slicer_io::{
-    SliceDebugOutput, SliceJobOutput, SliceJobRequest, load_stl_model, run_slice_debug_outputs,
-};
+use shockwave_slicer_io::{SliceDebugOutput, SliceJobOutput, SliceJobRequest, run_slice_job};
 use shockwave_voxel::field::{ExplicitKernelPropagation, KernelMove, KernelPathCheck};
 
 fn main() {
@@ -25,7 +22,6 @@ fn main() {
 fn run() -> Result<(), String> {
     let total_start = Instant::now();
     let config = parse_args(env::args().skip(1).collect())?;
-    let triangles = load_mesh(&config)?;
     let settings = slicer_settings_from_config(&config)?;
     let request = SliceJobRequest {
         input: config.input.clone(),
@@ -38,18 +34,10 @@ fn run() -> Result<(), String> {
     };
     let mut progress = stderr_progress();
     let mut timing = log_timing;
-    let output =
-        run_slice_debug_outputs(&request, &settings, &triangles, &mut progress, &mut timing)?;
+    let output = run_slice_job(&request, &settings, &mut progress, &mut timing)?;
     print_summary(&output);
     log_timing("total", total_start.elapsed());
     Ok(())
-}
-
-fn load_mesh(config: &cli::Config) -> Result<Vec<Triangle>, String> {
-    let start = Instant::now();
-    let triangles = load_stl_model(&config.input)?;
-    log_timing("load stl", start.elapsed());
-    Ok(triangles)
 }
 
 fn slicer_settings_from_config(config: &cli::Config) -> Result<SliceSettings, String> {

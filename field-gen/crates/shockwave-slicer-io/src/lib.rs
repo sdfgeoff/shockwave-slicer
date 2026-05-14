@@ -8,7 +8,9 @@ use shockwave_math::geometry::{Bounds, Triangle};
 use shockwave_path::LayerToolpaths;
 use shockwave_slicer::{SliceSettings, write_gcode};
 
-pub use job::{SliceDebugOutput, SliceJobOutput, SliceJobRequest, run_slice_debug_outputs};
+pub use job::{
+    SliceDebugOutput, SliceJobOutput, SliceJobRequest, run_slice_debug_outputs, run_slice_job,
+};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SliceOutputPaths {
@@ -117,6 +119,9 @@ fn temporary_path(path: &Path) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
+    use shockwave_math::geometry::Vec3;
+    use shockwave_slicer::{FieldPropagation, SliceSettings};
+
     use super::*;
 
     #[test]
@@ -163,7 +168,165 @@ mod tests {
         assert!(!path.exists());
     }
 
+    #[test]
+    fn slice_job_loads_model_and_writes_debug_outputs() {
+        let root = unique_temp_path("slice-job");
+        let input = root.with_extension("stl");
+        let output_prefix = root.join("out").join("cube");
+        fs::write(&input, cube_ascii_stl()).unwrap();
+        fs::create_dir_all(output_prefix.parent().unwrap()).unwrap();
+
+        let request = SliceJobRequest {
+            input: input.clone(),
+            output_prefix,
+            debug_output: SliceDebugOutput {
+                export_ply: false,
+                gcode: false,
+            },
+            kernel_path: None,
+        };
+        let mut progress = |_| {};
+        let mut timing = ignore_timing;
+        let output = run_slice_job(&request, &test_settings(), &mut progress, &mut timing).unwrap();
+
+        assert_eq!(output.triangle_count, 12);
+        assert!(output.occupied_count > 0);
+        assert!(output.paths.volume.exists());
+        assert!(output.paths.image.exists());
+        assert!(output.paths.metadata.exists());
+
+        let _ = fs::remove_file(input);
+        let _ = fs::remove_dir_all(root);
+    }
+
     fn unique_temp_path(name: &str) -> PathBuf {
         std::env::temp_dir().join(format!("{name}-{}", std::process::id()))
+    }
+
+    fn ignore_timing(_: &str, _: std::time::Duration) {}
+
+    fn test_settings() -> SliceSettings {
+        SliceSettings {
+            voxel_size: Vec3 {
+                x: 1.0,
+                y: 1.0,
+                z: 1.0,
+            },
+            requested_size: Some(Vec3 {
+                x: 4.0,
+                y: 4.0,
+                z: 4.0,
+            }),
+            padding_voxels: 0,
+            origin: None,
+            field_enabled: false,
+            propagation: FieldPropagation::Trapezoid,
+            field_rate: Vec3 {
+                x: 3.7,
+                y: 3.7,
+                z: 1.0,
+            },
+            max_unreached_below_mm: 5.0,
+            unreached_cone_angle_degrees: 55.0,
+            iso_spacing: 1.0,
+            wall_count: 1,
+            extrusion_width_mm: 0.45,
+            filament_diameter_mm: 1.75,
+            bed_temperature_c: 60,
+            nozzle_temperature_c: 215,
+            fan_speed_percent: 100,
+            global_z_offset_mm: 0.0,
+            infill_spacing_mm: None,
+        }
+    }
+
+    fn cube_ascii_stl() -> &'static str {
+        r#"solid cube
+facet normal 0 0 -1
+outer loop
+vertex 0 0 0
+vertex 1 1 0
+vertex 1 0 0
+endloop
+endfacet
+facet normal 0 0 -1
+outer loop
+vertex 0 0 0
+vertex 0 1 0
+vertex 1 1 0
+endloop
+endfacet
+facet normal 0 0 1
+outer loop
+vertex 0 0 1
+vertex 1 0 1
+vertex 1 1 1
+endloop
+endfacet
+facet normal 0 0 1
+outer loop
+vertex 0 0 1
+vertex 1 1 1
+vertex 0 1 1
+endloop
+endfacet
+facet normal 0 -1 0
+outer loop
+vertex 0 0 0
+vertex 1 0 0
+vertex 1 0 1
+endloop
+endfacet
+facet normal 0 -1 0
+outer loop
+vertex 0 0 0
+vertex 1 0 1
+vertex 0 0 1
+endloop
+endfacet
+facet normal 1 0 0
+outer loop
+vertex 1 0 0
+vertex 1 1 0
+vertex 1 1 1
+endloop
+endfacet
+facet normal 1 0 0
+outer loop
+vertex 1 0 0
+vertex 1 1 1
+vertex 1 0 1
+endloop
+endfacet
+facet normal 0 1 0
+outer loop
+vertex 1 1 0
+vertex 0 1 0
+vertex 0 1 1
+endloop
+endfacet
+facet normal 0 1 0
+outer loop
+vertex 1 1 0
+vertex 0 1 1
+vertex 1 1 1
+endloop
+endfacet
+facet normal -1 0 0
+outer loop
+vertex 0 1 0
+vertex 0 0 0
+vertex 0 0 1
+endloop
+endfacet
+facet normal -1 0 0
+outer loop
+vertex 0 1 0
+vertex 0 0 1
+vertex 0 1 1
+endloop
+endfacet
+endsolid cube
+"#
     }
 }
