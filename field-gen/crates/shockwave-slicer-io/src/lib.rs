@@ -1,3 +1,5 @@
+mod job;
+
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -5,6 +7,8 @@ use std::path::{Path, PathBuf};
 use shockwave_math::geometry::{Bounds, Triangle};
 use shockwave_path::LayerToolpaths;
 use shockwave_slicer::{SliceSettings, write_gcode};
+
+pub use job::{SliceDebugOutput, SliceJobOutput, SliceJobRequest, run_slice_debug_outputs};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SliceOutputPaths {

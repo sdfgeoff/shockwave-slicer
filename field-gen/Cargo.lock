@@ -234,10 +234,13 @@ dependencies = [
 name = "shockwave-slicer-io"
 version = "0.1.0"
 dependencies = [
+ "shockwave-iso",
  "shockwave-math",
+ "shockwave-output",
  "shockwave-path",
  "shockwave-slicer",
  "shockwave-stl",
+ "shockwave-voxel",
 ]
 
 [[package]]

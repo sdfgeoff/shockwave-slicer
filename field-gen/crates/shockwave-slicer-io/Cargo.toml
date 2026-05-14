@@ -4,7 +4,10 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
+shockwave-iso = { path = "../shockwave-iso" }
 shockwave-math = { path = "../shockwave-math" }
+shockwave-output = { path = "../shockwave-output" }
 shockwave-path = { path = "../shockwave-path" }
 shockwave-slicer = { path = "../shockwave-slicer" }
 shockwave-stl = { path = "../shockwave-stl" }
+shockwave-voxel = { path = "../shockwave-voxel" }

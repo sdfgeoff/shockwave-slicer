@@ -8,19 +8,12 @@ use std::time::{Duration, Instant};
 use cli::parse_args;
 use serde_json::Value;
 use shockwave_config::Dimensions3;
-use shockwave_iso::{IsosurfaceSet, extract_regular_isosurfaces};
-use shockwave_math::geometry::{Triangle, mesh_bounds};
-use shockwave_math::grid::Grid;
-use shockwave_output::{
-    Metadata, MetadataDocument, build_atlas, metadata_json, write_occupancy_bmp, write_ply_binary,
+use shockwave_math::geometry::Triangle;
+use shockwave_slicer::{FieldPropagation, SliceProgress, SliceSettings};
+use shockwave_slicer_io::{
+    SliceDebugOutput, SliceJobOutput, SliceJobRequest, load_stl_model, run_slice_debug_outputs,
 };
-use shockwave_path::LayerToolpaths;
-use shockwave_slicer::{
-    FIELD_EXTENSION_VOXELS, FieldPropagation, SliceProgress, SliceSettings,
-    clip_isosurfaces_to_solid, toolpaths_from_isosurfaces, voxelize,
-};
-use shockwave_slicer_io::{SliceOutputPaths, load_stl_model, write_gcode_atomically};
-use shockwave_voxel::field::{ExplicitKernelPropagation, Field, KernelMove, KernelPathCheck};
+use shockwave_voxel::field::{ExplicitKernelPropagation, KernelMove, KernelPathCheck};
 
 fn main() {
     if let Err(error) = run() {
@@ -34,9 +27,20 @@ fn run() -> Result<(), String> {
     let config = parse_args(env::args().skip(1).collect())?;
     let triangles = load_mesh(&config)?;
     let settings = slicer_settings_from_config(&config)?;
-    let (grid, occupancy, field) = voxelize_with_timing(&settings, &triangles)?;
-    let paths = write_outputs(&config, &settings, &triangles, &occupancy, &field, grid)?;
-    print_summary(&triangles, &occupancy, grid, &paths);
+    let request = SliceJobRequest {
+        input: config.input.clone(),
+        output_prefix: config.output_prefix.clone(),
+        debug_output: SliceDebugOutput {
+            export_ply: config.settings.output.export_ply,
+            gcode: config.settings.output.gcode,
+        },
+        kernel_path: config.settings.field.kernel_path.clone(),
+    };
+    let mut progress = stderr_progress();
+    let mut timing = log_timing;
+    let output =
+        run_slice_debug_outputs(&request, &settings, &triangles, &mut progress, &mut timing)?;
+    print_summary(&output);
     log_timing("total", total_start.elapsed());
     Ok(())
 }
@@ -94,17 +98,6 @@ fn vec3_from_dimensions(value: Dimensions3) -> shockwave_math::geometry::Vec3 {
     }
 }
 
-fn voxelize_with_timing(
-    settings: &SliceSettings,
-    triangles: &[Triangle],
-) -> Result<(Grid, Vec<u8>, Option<Field>), String> {
-    let start = Instant::now();
-    let mut progress = stderr_progress();
-    let result = voxelize(settings, triangles, &mut progress).map_err(|error| error.to_string())?;
-    log_timing("voxelize", start.elapsed());
-    Ok(result)
-}
-
 fn stderr_progress() -> impl FnMut(SliceProgress) {
     let mut last_percent = None;
     move |event| {
@@ -120,158 +113,6 @@ fn stderr_progress() -> impl FnMut(SliceProgress) {
             last_percent = Some(percent);
         }
     }
-}
-
-fn write_outputs(
-    config: &cli::Config,
-    settings: &SliceSettings,
-    triangles: &[Triangle],
-    occupancy: &[u8],
-    field: &Option<Field>,
-    grid: Grid,
-) -> Result<SliceOutputPaths, String> {
-    let bounds = mesh_bounds(triangles);
-    let atlas = build_atlas(grid);
-    let occupied_count = occupancy.iter().filter(|value| **value != 0).count();
-
-    let paths = SliceOutputPaths::from_prefix(
-        &config.output_prefix,
-        field.is_some(),
-        config.settings.output.export_ply,
-        config.settings.output.gcode,
-    );
-
-    let occ_start = Instant::now();
-    fs::write(&paths.volume, occupancy)
-        .map_err(|error| format!("failed to write {}: {error}", paths.volume.display()))?;
-    log_timing("write occ", occ_start.elapsed());
-
-    let bmp_start = Instant::now();
-    write_occupancy_bmp(&paths.image, occupancy, field.as_ref(), grid, atlas)
-        .map_err(|error| format!("failed to write {}: {error}", paths.image.display()))?;
-    log_timing("write bmp", bmp_start.elapsed());
-
-    if let Some(field) = field
-        .as_ref()
-        .filter(|_| config.settings.output.export_ply || config.settings.output.gcode)
-    {
-        let mesh = extract_isosurfaces_with_timing(field, grid, settings.iso_spacing)?;
-
-        if let Some(mesh_path) = paths.mesh.as_ref() {
-            let ply_start = Instant::now();
-            write_ply_binary(mesh_path, &mesh)
-                .map_err(|error| format!("failed to write {}: {error}", mesh_path.display()))?;
-            log_timing("write ply", ply_start.elapsed());
-        }
-
-        let clipped_mesh = clip_isosurfaces_with_timing(&mesh, triangles);
-
-        if let Some(clipped_mesh_path) = paths.clipped_mesh.as_ref() {
-            let clipped_ply_start = Instant::now();
-            write_ply_binary(clipped_mesh_path, &clipped_mesh).map_err(|error| {
-                format!("failed to write {}: {error}", clipped_mesh_path.display())
-            })?;
-            log_timing("write clipped ply", clipped_ply_start.elapsed());
-        }
-
-        if let Some(gcode_path) = paths.gcode.as_ref() {
-            write_gcode_with_timing(gcode_path, &clipped_mesh, settings, triangles, field, grid)?;
-        }
-    }
-
-    let metadata_start = Instant::now();
-    fs::write(
-        &paths.metadata,
-        metadata_json(&MetadataDocument {
-            metadata: Metadata {
-                input: &config.input.display().to_string(),
-                voxel_size: settings.voxel_size,
-                padding_voxels: settings.padding_voxels,
-                field_enabled: settings.field_enabled,
-                field_method: settings.field_method_name(),
-                kernel_path: config
-                    .settings
-                    .field
-                    .kernel_path
-                    .as_ref()
-                    .map(|path| path.display().to_string())
-                    .as_deref(),
-                field_rate: settings.field_rate,
-                max_unreached_below_mm: settings.max_unreached_below_mm,
-                unreached_cone_angle_degrees: settings.unreached_cone_angle_degrees,
-                field_extension_voxels: FIELD_EXTENSION_VOXELS,
-                iso_spacing: settings.iso_spacing,
-            },
-            bounds,
-            grid,
-            atlas,
-            volume_path: &paths.volume,
-            image_path: &paths.image,
-            mesh_path: paths.mesh.as_deref(),
-            clipped_mesh_path: paths.clipped_mesh.as_deref(),
-            field: field.as_ref(),
-            occupied_count,
-            voxel_count: occupancy.len(),
-        }),
-    )
-    .map_err(|error| format!("failed to write {}: {error}", paths.metadata.display()))?;
-    log_timing("write metadata", metadata_start.elapsed());
-
-    Ok(paths)
-}
-
-fn extract_isosurfaces_with_timing(
-    field: &Field,
-    grid: Grid,
-    iso_spacing: f64,
-) -> Result<IsosurfaceSet, String> {
-    let start = Instant::now();
-    let mesh = extract_regular_isosurfaces(field, grid, iso_spacing)?;
-    log_timing("extract isosurfaces", start.elapsed());
-    eprintln!(
-        "timing: isosurface set produced {} surfaces, {} vertices and {} triangles",
-        mesh.surfaces.len(),
-        mesh.vertex_count(),
-        mesh.triangle_count()
-    );
-    Ok(mesh)
-}
-
-fn clip_isosurfaces_with_timing(mesh: &IsosurfaceSet, triangles: &[Triangle]) -> IsosurfaceSet {
-    let start = Instant::now();
-    let clipped_mesh = clip_isosurfaces_to_solid(mesh, triangles);
-    log_timing("clip isosurfaces", start.elapsed());
-    eprintln!(
-        "timing: clipped isosurface set produced {} surfaces, {} vertices and {} triangles",
-        clipped_mesh.surfaces.len(),
-        clipped_mesh.vertex_count(),
-        clipped_mesh.triangle_count()
-    );
-    clipped_mesh
-}
-
-fn write_gcode_with_timing(
-    gcode_path: &Path,
-    clipped_mesh: &IsosurfaceSet,
-    settings: &SliceSettings,
-    triangles: &[Triangle],
-    field: &Field,
-    grid: Grid,
-) -> Result<(), String> {
-    let path_start = Instant::now();
-    let layers = toolpaths_from_isosurfaces(clipped_mesh, settings, field, grid)
-        .map_err(|error| error.to_string())?;
-    log_timing("generate perimeter paths", path_start.elapsed());
-    eprintln!(
-        "timing: generated {} toolpath layers with {} paths",
-        layers.len(),
-        layers.iter().map(LayerToolpaths::path_count).sum::<usize>()
-    );
-
-    let gcode_start = Instant::now();
-    write_gcode_atomically(gcode_path, &layers, mesh_bounds(triangles), settings)?;
-    log_timing("write gcode", gcode_start.elapsed());
-    Ok(())
 }
 
 fn load_kernel_propagation(path: &Path) -> Result<ExplicitKernelPropagation, String> {
@@ -342,9 +183,10 @@ fn parse_kernel_move((index, value): (usize, &Value)) -> Result<KernelMove, Stri
     })
 }
 
-fn print_summary(triangles: &[Triangle], occupancy: &[u8], grid: Grid, paths: &SliceOutputPaths) {
-    let occupied_count = occupancy.iter().filter(|value| **value != 0).count();
-    println!("Loaded {} triangles", triangles.len());
+fn print_summary(output: &SliceJobOutput) {
+    let paths = &output.paths;
+    let grid = output.grid;
+    println!("Loaded {} triangles", output.triangle_count);
     println!(
         "Grid: {} x {} x {} voxels",
         grid.dims[0], grid.dims[1], grid.dims[2]
@@ -357,7 +199,10 @@ fn print_summary(triangles: &[Triangle], occupancy: &[u8], grid: Grid, paths: &S
         "Actual size: {:.6} x {:.6} x {:.6} mm",
         grid.actual_size.x, grid.actual_size.y, grid.actual_size.z
     );
-    println!("Occupied: {occupied_count} / {}", occupancy.len());
+    println!(
+        "Occupied: {} / {}",
+        output.occupied_count, output.voxel_count
+    );
     println!("Wrote {}", paths.volume.display());
     println!("Wrote {}", paths.image.display());
     if let Some(mesh) = &paths.mesh {
