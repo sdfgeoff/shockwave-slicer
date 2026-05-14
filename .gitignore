@@ -1,4 +1,4 @@
 target
-voxels
+outputs
 *.pyc
 **/__pycache__

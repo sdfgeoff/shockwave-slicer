@@ -1,6 +1,6 @@
 INPUT_DIR ?= inputs
-OUTPUT_DIR ?= voxels
-CONFIG ?= field-gen/default-settings.json
+OUTPUT_DIR ?= outputs
+CONFIG ?= inputs/snapmaker-a350.json
 
 VOXEL_GEN := field-gen/target/release/field-gen
 FIELD_GEN_SOURCES := $(shell find field-gen/crates -type f 2>/dev/null)

@@ -1,0 +1,46 @@
+{
+  "slicing": {
+    "layer_height_mm": 0.25,
+    "origin_mm": null,
+    "wall_count": 6,
+    "extrusion_width_mm": 0.45,
+    "infill_percentage": 11.25,
+    "global_z_offset_mm": 0.0
+  },
+  "printer": {
+    "print_volume_mm": {
+      "x": 350.0,
+      "y": 350.0,
+      "z": 350.0
+    },
+    "obstruction": {
+      "printhead_clearance_height_mm": 5.0,
+      "printhead_clearance_angle_degrees": 55.0
+    }
+  },
+  "material": {
+    "filament_diameter_mm": 1.75,
+    "nozzle_temperature_c": 215,
+    "bed_temperature_c": 60,
+    "fan_speed_percent": 100
+  },
+  "field": {
+    "enabled": true,
+    "voxel_size_mm": {
+      "x": 0.4,
+      "y": 0.4,
+      "z": 0.4
+    },
+    "method": "trapezoid",
+    "anisotropic_rate": {
+      "x": 3.7,
+      "y": 3.7,
+      "z": 1.0
+    },
+    "kernel_path": null
+  },
+  "output": {
+    "export_ply": false,
+    "gcode": true
+  }
+}
