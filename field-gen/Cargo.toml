@@ -11,6 +11,7 @@ members = [
     "crates/shockwave-output",
     "crates/shockwave-path",
     "crates/shockwave-slicer",
+    "crates/shockwave-slicer-io",
     "crates/shockwave-stl",
     "crates/shockwave-voxel",
 ]

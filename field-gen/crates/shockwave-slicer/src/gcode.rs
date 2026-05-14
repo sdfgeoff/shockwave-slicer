@@ -8,7 +8,7 @@ use crate::error::SliceResult;
 use crate::settings::SliceSettings;
 
 pub fn write_gcode(
-    writer: &mut impl Write,
+    writer: &mut (impl Write + ?Sized),
     layers: &[LayerToolpaths],
     bounds: Bounds,
     settings: &SliceSettings,

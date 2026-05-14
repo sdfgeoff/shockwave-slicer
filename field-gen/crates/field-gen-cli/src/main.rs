@@ -2,7 +2,7 @@ mod cli;
 
 use std::env;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::{Duration, Instant};
 
 use cli::parse_args;
@@ -16,9 +16,9 @@ use shockwave_output::{
 use shockwave_path::LayerToolpaths;
 use shockwave_slicer::{
     FIELD_EXTENSION_VOXELS, FieldPropagation, SliceProgress, SliceSettings,
-    clip_isosurfaces_to_solid, toolpaths_from_isosurfaces, voxelize, write_gcode,
+    clip_isosurfaces_to_solid, toolpaths_from_isosurfaces, voxelize,
 };
-use shockwave_stl::parse_stl;
+use shockwave_slicer_io::{SliceOutputPaths, load_stl_model, write_gcode_atomically};
 use shockwave_voxel::field::{ExplicitKernelPropagation, Field, KernelMove, KernelPathCheck};
 
 fn main() {
@@ -41,17 +41,9 @@ fn run() -> Result<(), String> {
 }
 
 fn load_mesh(config: &cli::Config) -> Result<Vec<Triangle>, String> {
-    let read_start = Instant::now();
-    let bytes = fs::read(&config.input)
-        .map_err(|error| format!("failed to read {}: {error}", config.input.display()))?;
-    log_timing("read stl", read_start.elapsed());
-
-    let parse_start = Instant::now();
-    let triangles = parse_stl(&bytes)?;
-    log_timing("parse stl", parse_start.elapsed());
-    if triangles.is_empty() {
-        return Err("STL did not contain any triangles".to_string());
-    }
+    let start = Instant::now();
+    let triangles = load_stl_model(&config.input)?;
+    log_timing("load stl", start.elapsed());
     Ok(triangles)
 }
 
@@ -119,30 +111,26 @@ fn write_outputs(
     occupancy: &[u8],
     field: &Option<Field>,
     grid: Grid,
-) -> Result<OutputPaths, String> {
+) -> Result<SliceOutputPaths, String> {
     let bounds = mesh_bounds(triangles);
     let atlas = build_atlas(grid);
     let occupied_count = occupancy.iter().filter(|value| **value != 0).count();
 
-    let volume_path = config.output_prefix.with_extension("occ");
-    let image_path = config.output_prefix.with_extension("bmp");
-    let mesh_path =
-        (field.is_some() && config.export_ply).then(|| config.output_prefix.with_extension("ply"));
-    let clipped_mesh_path = (field.is_some() && config.export_ply)
-        .then(|| suffixed_output_path(config, "clipped", "ply"));
-    let gcode_path = config
-        .gcode_enabled
-        .then(|| config.output_prefix.with_extension("gcode"));
-    let metadata_path = config.output_prefix.with_extension("json");
+    let paths = SliceOutputPaths::from_prefix(
+        &config.output_prefix,
+        field.is_some(),
+        config.export_ply,
+        config.gcode_enabled,
+    );
 
     let occ_start = Instant::now();
-    fs::write(&volume_path, occupancy)
-        .map_err(|error| format!("failed to write {}: {error}", volume_path.display()))?;
+    fs::write(&paths.volume, occupancy)
+        .map_err(|error| format!("failed to write {}: {error}", paths.volume.display()))?;
     log_timing("write occ", occ_start.elapsed());
 
     let bmp_start = Instant::now();
-    write_occupancy_bmp(&image_path, occupancy, field.as_ref(), grid, atlas)
-        .map_err(|error| format!("failed to write {}: {error}", image_path.display()))?;
+    write_occupancy_bmp(&paths.image, occupancy, field.as_ref(), grid, atlas)
+        .map_err(|error| format!("failed to write {}: {error}", paths.image.display()))?;
     log_timing("write bmp", bmp_start.elapsed());
 
     if let Some(field) = field
@@ -151,7 +139,7 @@ fn write_outputs(
     {
         let mesh = extract_isosurfaces_with_timing(field, grid, settings.iso_spacing)?;
 
-        if let Some(mesh_path) = mesh_path.as_ref() {
+        if let Some(mesh_path) = paths.mesh.as_ref() {
             let ply_start = Instant::now();
             write_ply_binary(mesh_path, &mesh)
                 .map_err(|error| format!("failed to write {}: {error}", mesh_path.display()))?;
@@ -160,7 +148,7 @@ fn write_outputs(
 
         let clipped_mesh = clip_isosurfaces_with_timing(&mesh, triangles);
 
-        if let Some(clipped_mesh_path) = clipped_mesh_path.as_ref() {
+        if let Some(clipped_mesh_path) = paths.clipped_mesh.as_ref() {
             let clipped_ply_start = Instant::now();
             write_ply_binary(clipped_mesh_path, &clipped_mesh).map_err(|error| {
                 format!("failed to write {}: {error}", clipped_mesh_path.display())
@@ -168,14 +156,14 @@ fn write_outputs(
             log_timing("write clipped ply", clipped_ply_start.elapsed());
         }
 
-        if let Some(gcode_path) = gcode_path.as_ref() {
+        if let Some(gcode_path) = paths.gcode.as_ref() {
             write_gcode_with_timing(gcode_path, &clipped_mesh, settings, triangles, field, grid)?;
         }
     }
 
     let metadata_start = Instant::now();
     fs::write(
-        &metadata_path,
+        &paths.metadata,
         metadata_json(&MetadataDocument {
             metadata: Metadata {
                 input: &config.input.display().to_string(),
@@ -197,26 +185,19 @@ fn write_outputs(
             bounds,
             grid,
             atlas,
-            volume_path: &volume_path,
-            image_path: &image_path,
-            mesh_path: mesh_path.as_deref(),
-            clipped_mesh_path: clipped_mesh_path.as_deref(),
+            volume_path: &paths.volume,
+            image_path: &paths.image,
+            mesh_path: paths.mesh.as_deref(),
+            clipped_mesh_path: paths.clipped_mesh.as_deref(),
             field: field.as_ref(),
             occupied_count,
             voxel_count: occupancy.len(),
         }),
     )
-    .map_err(|error| format!("failed to write {}: {error}", metadata_path.display()))?;
+    .map_err(|error| format!("failed to write {}: {error}", paths.metadata.display()))?;
     log_timing("write metadata", metadata_start.elapsed());
 
-    Ok(OutputPaths {
-        volume: volume_path,
-        image: image_path,
-        mesh: mesh_path,
-        clipped_mesh: clipped_mesh_path,
-        gcode: gcode_path,
-        metadata: metadata_path,
-    })
+    Ok(paths)
 }
 
 fn extract_isosurfaces_with_timing(
@@ -268,11 +249,7 @@ fn write_gcode_with_timing(
     );
 
     let gcode_start = Instant::now();
-    let mut bytes = Vec::new();
-    write_gcode(&mut bytes, &layers, mesh_bounds(triangles), settings)
-        .map_err(|error| error.to_string())?;
-    fs::write(gcode_path, bytes)
-        .map_err(|error| format!("failed to write {}: {error}", gcode_path.display()))?;
+    write_gcode_atomically(gcode_path, &layers, mesh_bounds(triangles), settings)?;
     log_timing("write gcode", gcode_start.elapsed());
     Ok(())
 }
@@ -345,27 +322,7 @@ fn parse_kernel_move((index, value): (usize, &Value)) -> Result<KernelMove, Stri
     })
 }
 
-struct OutputPaths {
-    volume: PathBuf,
-    image: PathBuf,
-    mesh: Option<PathBuf>,
-    clipped_mesh: Option<PathBuf>,
-    gcode: Option<PathBuf>,
-    metadata: PathBuf,
-}
-
-fn suffixed_output_path(config: &cli::Config, suffix: &str, extension: &str) -> PathBuf {
-    let mut path = config.output_prefix.clone();
-    let stem = path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("occupancy");
-    path.set_file_name(format!("{stem}-{suffix}"));
-    path.set_extension(extension);
-    path
-}
-
-fn print_summary(triangles: &[Triangle], occupancy: &[u8], grid: Grid, paths: &OutputPaths) {
+fn print_summary(triangles: &[Triangle], occupancy: &[u8], grid: Grid, paths: &SliceOutputPaths) {
     let occupied_count = occupancy.iter().filter(|value| **value != 0).count();
     println!("Loaded {} triangles", triangles.len());
     println!(

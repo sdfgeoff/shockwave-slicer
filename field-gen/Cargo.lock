@@ -47,7 +47,7 @@ dependencies = [
  "shockwave-output",
  "shockwave-path",
  "shockwave-slicer",
- "shockwave-stl",
+ "shockwave-slicer-io",
  "shockwave-voxel",
 ]
 
@@ -226,6 +226,16 @@ dependencies = [
  "shockwave-math",
  "shockwave-path",
  "shockwave-voxel",
+]
+
+[[package]]
+name = "shockwave-slicer-io"
+version = "0.1.0"
+dependencies = [
+ "shockwave-math",
+ "shockwave-path",
+ "shockwave-slicer",
+ "shockwave-stl",
 ]
 
 [[package]]

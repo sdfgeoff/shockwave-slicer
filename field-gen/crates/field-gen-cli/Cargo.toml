@@ -14,5 +14,5 @@ shockwave-iso = { path = "../shockwave-iso" }
 shockwave-output = { path = "../shockwave-output" }
 shockwave-path = { path = "../shockwave-path" }
 shockwave-slicer = { path = "../shockwave-slicer" }
-shockwave-stl = { path = "../shockwave-stl" }
+shockwave-slicer-io = { path = "../shockwave-slicer-io" }
 shockwave-voxel = { path = "../shockwave-voxel" }

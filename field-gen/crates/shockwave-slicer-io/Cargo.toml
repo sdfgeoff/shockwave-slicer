@@ -1,0 +1,10 @@
+[package]
+name = "shockwave-slicer-io"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+shockwave-math = { path = "../shockwave-math" }
+shockwave-path = { path = "../shockwave-path" }
+shockwave-slicer = { path = "../shockwave-slicer" }
+shockwave-stl = { path = "../shockwave-stl" }
