@@ -7,6 +7,7 @@ use std::time::{Duration, Instant};
 
 use cli::parse_args;
 use serde_json::Value;
+use shockwave_config::Dimensions3;
 use shockwave_iso::{IsosurfaceSet, extract_regular_isosurfaces};
 use shockwave_math::geometry::{Triangle, mesh_bounds};
 use shockwave_math::grid::Grid;
@@ -48,36 +49,49 @@ fn load_mesh(config: &cli::Config) -> Result<Vec<Triangle>, String> {
 }
 
 fn slicer_settings_from_config(config: &cli::Config) -> Result<SliceSettings, String> {
-    let propagation = if let Some(kernel_path) = &config.kernel_path {
+    let settings = &config.settings;
+    let field_rate = vec3_from_dimensions(settings.field.anisotropic_rate);
+    let propagation = if let Some(kernel_path) = &settings.field.kernel_path {
         let load_start = Instant::now();
         let propagation = load_kernel_propagation(kernel_path)?;
         log_timing("load kernel", load_start.elapsed());
         eprintln!("Loaded kernel with {} moves", propagation.move_count());
         FieldPropagation::ExplicitKernel(propagation)
     } else {
-        FieldPropagation::from_method(config.field_method, config.field_rate)
+        FieldPropagation::from_method(settings.field.method, field_rate)
     };
 
     Ok(SliceSettings {
-        voxel_size: config.voxel_size,
-        requested_size: config.requested_size,
-        padding_voxels: config.padding_voxels,
-        origin: config.origin,
-        field_enabled: config.field_enabled,
+        voxel_size: vec3_from_dimensions(settings.slicing.voxel_size_mm),
+        requested_size: Some(vec3_from_dimensions(settings.printer.print_volume_mm)),
+        padding_voxels: settings.slicing.padding_voxels,
+        origin: settings.slicing.origin_mm.map(vec3_from_dimensions),
+        field_enabled: settings.field.enabled,
         propagation,
-        field_rate: config.field_rate,
-        max_unreached_below_mm: config.max_unreached_below_mm,
-        unreached_cone_angle_degrees: config.unreached_cone_angle_degrees,
-        iso_spacing: config.iso_spacing,
-        wall_count: config.wall_count,
-        extrusion_width_mm: config.extrusion_width_mm,
-        filament_diameter_mm: config.filament_diameter_mm,
-        bed_temperature_c: config.bed_temperature_c,
-        nozzle_temperature_c: config.nozzle_temperature_c,
-        fan_speed_percent: config.fan_speed_percent,
-        global_z_offset_mm: config.global_z_offset_mm,
-        infill_spacing_mm: config.infill_spacing_mm,
+        field_rate,
+        max_unreached_below_mm: settings.printer.obstruction.printhead_clearance_height_mm,
+        unreached_cone_angle_degrees: settings
+            .printer
+            .obstruction
+            .printhead_clearance_angle_degrees,
+        iso_spacing: settings.slicing.layer_height_mm,
+        wall_count: settings.slicing.wall_count,
+        extrusion_width_mm: settings.slicing.extrusion_width_mm,
+        filament_diameter_mm: settings.material.filament_diameter_mm,
+        bed_temperature_c: settings.material.bed_temperature_c,
+        nozzle_temperature_c: settings.material.nozzle_temperature_c,
+        fan_speed_percent: settings.material.fan_speed_percent,
+        global_z_offset_mm: settings.slicing.global_z_offset_mm,
+        infill_spacing_mm: settings.slicing.infill_line_spacing_mm(),
     })
+}
+
+fn vec3_from_dimensions(value: Dimensions3) -> shockwave_math::geometry::Vec3 {
+    shockwave_math::geometry::Vec3 {
+        x: value.x,
+        y: value.y,
+        z: value.z,
+    }
 }
 
 fn voxelize_with_timing(
@@ -123,8 +137,8 @@ fn write_outputs(
     let paths = SliceOutputPaths::from_prefix(
         &config.output_prefix,
         field.is_some(),
-        config.export_ply,
-        config.gcode_enabled,
+        config.settings.output.export_ply,
+        config.settings.output.gcode,
     );
 
     let occ_start = Instant::now();
@@ -139,7 +153,7 @@ fn write_outputs(
 
     if let Some(field) = field
         .as_ref()
-        .filter(|_| config.export_ply || config.gcode_enabled)
+        .filter(|_| config.settings.output.export_ply || config.settings.output.gcode)
     {
         let mesh = extract_isosurfaces_with_timing(field, grid, settings.iso_spacing)?;
 
@@ -171,20 +185,22 @@ fn write_outputs(
         metadata_json(&MetadataDocument {
             metadata: Metadata {
                 input: &config.input.display().to_string(),
-                voxel_size: config.voxel_size,
-                padding_voxels: config.padding_voxels,
-                field_enabled: config.field_enabled,
+                voxel_size: settings.voxel_size,
+                padding_voxels: settings.padding_voxels,
+                field_enabled: settings.field_enabled,
                 field_method: settings.field_method_name(),
                 kernel_path: config
+                    .settings
+                    .field
                     .kernel_path
                     .as_ref()
                     .map(|path| path.display().to_string())
                     .as_deref(),
-                field_rate: config.field_rate,
-                max_unreached_below_mm: config.max_unreached_below_mm,
-                unreached_cone_angle_degrees: config.unreached_cone_angle_degrees,
+                field_rate: settings.field_rate,
+                max_unreached_below_mm: settings.max_unreached_below_mm,
+                unreached_cone_angle_degrees: settings.unreached_cone_angle_degrees,
                 field_extension_voxels: FIELD_EXTENSION_VOXELS,
-                iso_spacing: config.iso_spacing,
+                iso_spacing: settings.iso_spacing,
             },
             bounds,
             grid,

@@ -37,21 +37,28 @@ When field generation is enabled, the propagated field is computed through occup
 
 ## Explicit Growth Kernels
 
-`field-gen` can generate a native radial trapezoid SDF kernel from the current voxel size:
+`field-gen` takes slicing settings from JSON:
 
 ```bash
-field-gen input.stl --voxel 0.4 0.4 0.4 --field-method trapezoid --iso-spacing 0.5 --output output/prefix
+field-gen input.stl --config field-gen/default-settings.json --output output/prefix
 ```
 
-The native trapezoid method uses the same SDF model as `field-gen/generate_trapezoid_sdf_kernel.py`, but samples it directly for the active voxel size instead of relying on a pre-generated JSON file. This avoids accidentally using a kernel authored for one voxel size at a different physical resolution.
+The native trapezoid field method uses the same SDF model as `field-gen/generate_trapezoid_sdf_kernel.py`, but samples it directly for the active voxel size instead of relying on a pre-generated JSON file. This avoids accidentally using a kernel authored for one voxel size at a different physical resolution.
 
-`field-gen` can propagate the field with an explicit JSON kernel:
+To use an explicit growth kernel, set `field.kernel_path` in the slicer settings JSON:
 
-```bash
-field-gen input.stl --voxel 1 1 1 --kernel kernel.json --iso-spacing 0.5 --output output/prefix
+```json
+{
+  "field": {
+    "enabled": true,
+    "method": "trapezoid",
+    "anisotropic_rate": { "x": 3.7, "y": 3.7, "z": 1.0 },
+    "kernel_path": "kernel.json"
+  }
+}
 ```
 
-The kernel replaces `--field-rate` propagation and implies `--field`. Its `moves` array defines directed graph edges from each voxel:
+The kernel replaces method-based propagation. Its `moves` array defines directed graph edges from each voxel:
 
 ```json
 {
@@ -70,34 +77,32 @@ The kernel replaces `--field-rate` propagation and implies `--field`. Its `moves
 
 ## Propagation Constraints
 
-Field propagation also applies printer reachability constraints before isosurface extraction:
+Field propagation also applies printer reachability constraints before isosurface extraction. These are configured in `printer.obstruction`:
 
-```bash
-field-gen input.stl --voxel 1 1 1 --kernel kernel.json \
-  --max-unreached-below 5 \
-  --unreached-cone-angle 80
+```json
+{
+  "printer": {
+    "obstruction": {
+      "printhead_clearance_height_mm": 5.0,
+      "printhead_clearance_angle_degrees": 55.0
+    }
+  }
+}
 ```
 
-`--max-unreached-below` prevents a voxel from being reached while any other unreached occupied voxel is more than the configured distance below it. `--unreached-cone-angle` reserves an upward cone above every unreached occupied voxel until that voxel is reached. The angle is measured from vertical; the default is `80` degrees. Use `--unreached-cone-angle 0` to disable the cone constraint.
+`printhead_clearance_height_mm` prevents a voxel from being reached while any other unreached occupied voxel is more than the configured distance below it. `printhead_clearance_angle_degrees` reserves an upward cone above every unreached occupied voxel until that voxel is reached. The angle is measured from vertical. Use `0` to disable the cone constraint.
 
 ## Experimental G-code Output
 
 `field-gen` can generate experimental Marlin G-code from the clipped isosurfaces:
 
 ```bash
-field-gen input.stl --voxel 0.4 0.4 0.4 --field-method trapezoid \
-  --iso-spacing 1.0 \
-  --gcode \
-  --wall-count 2 \
-  --extrusion-width 0.4 \
-  --filament-diameter 1.75 \
-  --infill-spacing 4.0 \
-  --output output/prefix
+field-gen input.stl --config field-gen/default-settings.json --output output/prefix
 ```
 
-This currently computes mesh boundary distance on each clipped isosurface, extracts contour-parallel perimeter paths at bead centerline offsets, adds simple world-space grid infill alternating between +45 and -45 degrees by layer, and writes `output/prefix.gcode`. The number of walls is configurable with `--wall-count` or `WALL_COUNT` in the Makefile. Infill spacing is configurable with `--infill-spacing` or `INFILL_SPACING`; use `0` to disable infill. G-code coordinates are shifted so the original STL/model bounds minimum maps to `X=0`, `Y=0`, and `Z=0`.
+This currently computes mesh boundary distance on each clipped isosurface, extracts contour-parallel perimeter paths at bead centerline offsets, adds simple world-space grid infill alternating between +45 and -45 degrees by layer, and writes `output/prefix.gcode` when `output.gcode` is true. The number of walls, extrusion width, filament diameter, and infill percentage are configured in the JSON settings. G-code coordinates are shifted so the original STL/model bounds minimum maps to `X=0`, `Y=0`, and `Z=0`.
 
-Extrusion height is estimated per path point from the propagated field gradient as `iso_spacing / |grad(field)|`. G-code generation fails if the field gradient is undefined or non-finite at a path point; temporary pre-gradient path defaults use `--iso-spacing`. Travel between paths uses a basic Z-hop to the highest point on the current layer.
+Extrusion height is estimated per path point from the propagated field gradient as `layer_height_mm / |grad(field)|`. G-code generation fails if the field gradient is undefined or non-finite at a path point; temporary pre-gradient path defaults use `slicing.layer_height_mm`. Travel between paths uses a basic Z-hop to the highest point on the current layer.
 
 It does not yet generate Arachne-style bead variation, support material, robust travel optimization, or mature local non-planar layer-height compensation. Treat it as a pathing integration test, not printer-ready slicer output.
 
@@ -107,10 +112,7 @@ The Makefile generates G-code by default for STLs in `inputs/`:
 make voxels
 ```
 
-Use `make voxels GCODE=0` to skip G-code output.
-Use `make voxels WALL_COUNT=1` to generate a single wall/perimeter.
-Use `make voxels INFILL_SPACING=0` to disable infill.
-Use `make voxels PLY=1` or pass `--export-ply` to also write unclipped and clipped isosurface PLY files. PLY output is disabled by default.
+It uses `field-gen/default-settings.json` by default. Override with `make voxels CONFIG=path/to/settings.json`.
 
 ## Metadata
 
