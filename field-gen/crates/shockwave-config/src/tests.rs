@@ -55,6 +55,18 @@ fn missing_settings_loads_as_default() {
 }
 
 #[test]
+fn repository_default_settings_file_is_valid() {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("default-settings.json");
+
+    let loaded = load_settings(path).unwrap();
+
+    assert_eq!(loaded, SlicerSettings::default());
+}
+
+#[test]
 fn validates_user_facing_settings() {
     let mut settings = SlicerSettings::default();
     settings.slicing.layer_height_mm = 0.0;
