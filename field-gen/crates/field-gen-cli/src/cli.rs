@@ -1,25 +1,13 @@
 use std::path::PathBuf;
 
+pub use shockwave_config::FieldMethod;
+use shockwave_config::{Dimensions3, SlicerSettings, infill_line_spacing_mm, load_settings};
 use shockwave_math::geometry::Vec3;
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum FieldMethod {
-    Anisotropic,
-    Trapezoid,
-}
-
-impl FieldMethod {
-    pub fn name(self) -> &'static str {
-        match self {
-            Self::Anisotropic => "anisotropic",
-            Self::Trapezoid => "trapezoid",
-        }
-    }
-}
 
 #[derive(Clone, Debug)]
 pub struct Config {
     pub input: PathBuf,
+    pub settings_path: Option<PathBuf>,
     pub output_prefix: PathBuf,
     pub voxel_size: Vec3,
     pub requested_size: Option<Vec3>,
@@ -46,34 +34,42 @@ pub fn parse_args(args: Vec<String>) -> Result<Config, String> {
     }
 
     let input = PathBuf::from(&args[0]);
+    let settings_path = find_settings_path(&args)?;
+    let settings = match &settings_path {
+        Some(path) => load_settings(path)?,
+        None => SlicerSettings::default(),
+    };
     let mut output_prefix = PathBuf::from("occupancy");
-    let mut voxel_size = None;
-    let mut requested_size = None;
-    let mut padding_voxels = 3;
+    let mut voxel_size = vec3_from_dimensions(settings.slicing.voxel_size_mm);
+    let mut requested_size = Some(vec3_from_dimensions(settings.printer.print_volume_mm));
+    let mut padding_voxels = settings.slicing.padding_voxels;
     let mut origin = None;
     let mut field_enabled = false;
-    let mut field_method = FieldMethod::Anisotropic;
-    let mut field_rate = Vec3 {
-        x: 1.0,
-        y: 1.0,
-        z: 1.0,
-    };
+    let mut field_method = settings.field.method;
+    let mut field_rate = vec3_from_dimensions(settings.field.anisotropic_rate);
     let mut kernel_path = None;
-    let mut max_unreached_below_mm = 5.0;
-    let mut unreached_cone_angle_degrees = 80.0;
-    let mut iso_spacing = 0.5_f64;
+    let mut max_unreached_below_mm = settings.printer.obstruction.printhead_clearance_height_mm;
+    let mut unreached_cone_angle_degrees = settings
+        .printer
+        .obstruction
+        .printhead_clearance_angle_degrees;
+    let mut iso_spacing = settings.slicing.layer_height_mm;
     let mut export_ply = false;
     let mut gcode_enabled = false;
-    let mut wall_count = 2usize;
-    let mut extrusion_width_mm = 0.4_f64;
-    let mut filament_diameter_mm = 1.75_f64;
-    let mut infill_spacing_mm = Some(4.0_f64);
+    let mut wall_count = settings.slicing.wall_count;
+    let mut extrusion_width_mm = settings.slicing.extrusion_width_mm;
+    let mut filament_diameter_mm = settings.material.filament_diameter_mm;
+    let mut infill_spacing_mm = settings.slicing.infill_line_spacing_mm();
     let mut index = 1;
 
     while index < args.len() {
         match args[index].as_str() {
+            "--config" => {
+                index += 1;
+                require_flag_value("--config", &args, index)?;
+            }
             "--voxel" => {
-                voxel_size = Some(parse_vec3_flag("--voxel", &args, &mut index)?);
+                voxel_size = parse_vec3_flag("--voxel", &args, &mut index)?;
             }
             "--size" => {
                 requested_size = Some(parse_vec3_flag("--size", &args, &mut index)?);
@@ -156,6 +152,11 @@ pub fn parse_args(args: Vec<String>) -> Result<Config, String> {
                 let spacing = parse_non_negative_number("--infill-spacing", &args, index)?;
                 infill_spacing_mm = (spacing > 0.0).then_some(spacing);
             }
+            "--infill-percentage" => {
+                index += 1;
+                let percentage = parse_percentage("--infill-percentage", &args, index)?;
+                infill_spacing_mm = infill_line_spacing_mm(extrusion_width_mm, percentage);
+            }
             "--output" | "-o" => {
                 index += 1;
                 output_prefix = args
@@ -170,7 +171,6 @@ pub fn parse_args(args: Vec<String>) -> Result<Config, String> {
         index += 1;
     }
 
-    let voxel_size = voxel_size.ok_or_else(|| "--voxel x y z is required".to_string())?;
     validate_positive_vec3("--voxel", voxel_size)?;
     if let Some(size) = requested_size {
         validate_positive_vec3("--size", size)?;
@@ -185,6 +185,7 @@ pub fn parse_args(args: Vec<String>) -> Result<Config, String> {
 
     Ok(Config {
         input,
+        settings_path,
         output_prefix,
         voxel_size,
         requested_size,
@@ -206,6 +207,31 @@ pub fn parse_args(args: Vec<String>) -> Result<Config, String> {
     })
 }
 
+fn find_settings_path(args: &[String]) -> Result<Option<PathBuf>, String> {
+    let mut index = 1;
+    let mut settings_path = None;
+    while index < args.len() {
+        if args[index] == "--config" {
+            index += 1;
+            let path = args
+                .get(index)
+                .map(PathBuf::from)
+                .ok_or_else(|| "--config requires a settings JSON path".to_string())?;
+            settings_path = Some(path);
+        }
+        index += 1;
+    }
+    Ok(settings_path)
+}
+
+fn vec3_from_dimensions(value: Dimensions3) -> Vec3 {
+    Vec3 {
+        x: value.x,
+        y: value.y,
+        z: value.z,
+    }
+}
+
 fn parse_field_method(args: &[String], index: usize) -> Result<FieldMethod, String> {
     match args
         .get(index)
@@ -218,6 +244,12 @@ fn parse_field_method(args: &[String], index: usize) -> Result<FieldMethod, Stri
             "--field-method must be `anisotropic` or `trapezoid`, got `{value}`"
         )),
     }
+}
+
+fn require_flag_value<'a>(flag: &str, args: &'a [String], index: usize) -> Result<&'a str, String> {
+    args.get(index)
+        .map(String::as_str)
+        .ok_or_else(|| format!("{flag} requires a value"))
 }
 
 fn parse_vec3_flag(flag: &str, args: &[String], index: &mut usize) -> Result<Vec3, String> {
@@ -285,21 +317,102 @@ fn parse_angle_degrees(flag: &str, args: &[String], index: usize) -> Result<f64,
     Ok(value)
 }
 
+fn parse_percentage(flag: &str, args: &[String], index: usize) -> Result<f64, String> {
+    let value = parse_non_negative_number(flag, args, index)?;
+    if value > 100.0 {
+        return Err(format!("{flag} must be less than or equal to 100"));
+    }
+    Ok(value)
+}
+
 fn usage() -> String {
-    "usage: field-gen <input.stl> --voxel <x-mm> <y-mm> <z-mm> [--size <x-mm> <y-mm> <z-mm>] [--padding-voxels <n>] [--origin <x-mm> <y-mm> <z-mm>] [--field] [--field-method <anisotropic|trapezoid>] [--field-rate <x> <y> <z>] [--kernel <kernel.json>] [--max-unreached-below <mm>] [--unreached-cone-angle <degrees>] [--iso-spacing <distance>] [--export-ply] [--gcode] [--wall-count <n>] [--extrusion-width <mm>] [--filament-diameter <mm>] [--infill-spacing <mm>] [--output <prefix>]\n\
+    "usage: field-gen <input.stl> [--config <settings.json>] [--voxel <x-mm> <y-mm> <z-mm>] [--size <x-mm> <y-mm> <z-mm>] [--padding-voxels <n>] [--origin <x-mm> <y-mm> <z-mm>] [--field] [--field-method <anisotropic|trapezoid>] [--field-rate <x> <y> <z>] [--kernel <kernel.json>] [--max-unreached-below <mm>] [--unreached-cone-angle <degrees>] [--iso-spacing <distance>] [--export-ply] [--gcode] [--wall-count <n>] [--extrusion-width <mm>] [--filament-diameter <mm>] [--infill-spacing <mm>] [--infill-percentage <percent>] [--output <prefix>]\n\
 \n\
-STL coordinates are assumed to be millimeters. If --size is provided, it is treated as a maximum grid size.\n\
-By default, the grid fits the STL bounds plus 3 voxels of padding on each side.\n\
+STL coordinates are assumed to be millimeters. Defaults come from SlicerSettings or --config when provided.\n\
+If --size is provided, it is treated as a maximum grid size; otherwise printer.print_volume_mm is used.\n\
 --field propagates an anisotropic field through occupied voxels from the lowest occupied Z slice.\n\
 --field-method trapezoid generates a native radial trapezoid SDF kernel from the active voxel size.\n\
 --kernel propagates the field using an explicit JSON kernel instead of --field-rate.\n\
---max-unreached-below defaults to 5mm and prevents reaching high voxels while lower occupied voxels remain unreached.\n\
---unreached-cone-angle defaults to 80 degrees from vertical and reserves access cones above unreached occupied voxels. Use 0 to disable this constraint.\n\
+--max-unreached-below prevents reaching high voxels while lower occupied voxels remain unreached.\n\
+--unreached-cone-angle reserves access cones above unreached occupied voxels. Use 0 to disable this constraint.\n\
 --iso-spacing controls the spacing between exported isosurface levels when --field is enabled.\n\
 --export-ply writes unclipped and clipped isosurface PLY files; PLY output is disabled by default.\n\
 --gcode writes experimental Marlin G-code from clipped isosurfaces and implies --field.\n\
---wall-count defaults to 2 when --gcode is enabled.\n\
---extrusion-width defaults to 0.4mm, --filament-diameter defaults to 1.75mm, and --infill-spacing defaults to 4mm. Use --infill-spacing 0 to disable infill.\n\
+Use --infill-spacing 0 or --infill-percentage 0 to disable infill.\n\
 Voxel size takes priority: grid dimensions are ceil(size / voxel), so actual size may expand slightly."
         .to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use shockwave_config::{save_settings, settings_path_in_config_dir};
+
+    #[test]
+    fn defaults_come_from_slicer_settings() {
+        let config = parse_args(vec!["part.stl".to_string()]).unwrap();
+
+        assert_eq!(config.voxel_size.x, 0.4);
+        assert_eq!(config.requested_size.unwrap().x, 256.0);
+        assert_eq!(config.padding_voxels, 3);
+        assert_eq!(config.field_method, FieldMethod::Trapezoid);
+        assert_eq!(config.iso_spacing, 0.25);
+        assert_eq!(config.wall_count, 6);
+        assert_eq!(config.extrusion_width_mm, 0.45);
+        assert_eq!(config.infill_spacing_mm, Some(4.0));
+    }
+
+    #[test]
+    fn loads_settings_json_and_allows_cli_overrides() {
+        let settings_path = settings_path_in_config_dir(unique_temp_path("cli-config"));
+        let mut settings = SlicerSettings::default();
+        settings.slicing.layer_height_mm = 0.3;
+        settings.slicing.voxel_size_mm = Dimensions3::uniform(0.8);
+        settings.slicing.infill_percentage = 50.0;
+        settings.printer.print_volume_mm = Dimensions3 {
+            x: 180.0,
+            y: 181.0,
+            z: 182.0,
+        };
+        save_settings(&settings_path, &settings).unwrap();
+
+        let config = parse_args(vec![
+            "part.stl".to_string(),
+            "--config".to_string(),
+            settings_path.display().to_string(),
+            "--iso-spacing".to_string(),
+            "0.2".to_string(),
+            "--voxel".to_string(),
+            "1".to_string(),
+            "2".to_string(),
+            "3".to_string(),
+        ])
+        .unwrap();
+
+        assert_eq!(config.settings_path, Some(settings_path));
+        assert_eq!(config.iso_spacing, 0.2);
+        assert_eq!(config.voxel_size.x, 1.0);
+        assert_eq!(config.voxel_size.y, 2.0);
+        assert_eq!(config.voxel_size.z, 3.0);
+        assert_eq!(config.requested_size.unwrap().x, 180.0);
+        assert_eq!(config.infill_spacing_mm, Some(0.9));
+    }
+
+    #[test]
+    fn infill_percentage_flag_overrides_spacing_from_settings() {
+        let config = parse_args(vec![
+            "part.stl".to_string(),
+            "--extrusion-width".to_string(),
+            "0.5".to_string(),
+            "--infill-percentage".to_string(),
+            "25".to_string(),
+        ])
+        .unwrap();
+
+        assert_eq!(config.infill_spacing_mm, Some(2.0));
+    }
+
+    fn unique_temp_path(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("{name}-{}", std::process::id()))
+    }
 }

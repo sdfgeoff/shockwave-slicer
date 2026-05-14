@@ -317,6 +317,7 @@ mod tests {
         let output_prefix = unique_temp_prefix("shockwave-gcode-regression");
         let config = cli::Config {
             input: PathBuf::from("offset-box.stl"),
+            settings_path: None,
             output_prefix,
             voxel_size: v(1.0, 1.0, 1.0),
             requested_size: Some(v(16.0, 16.0, 12.0)),

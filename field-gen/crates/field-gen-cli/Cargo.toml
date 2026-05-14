@@ -7,6 +7,7 @@ edition.workspace = true
 rayon = "1.10"
 serde_json = "1.0"
 shockwave-clip = { path = "../shockwave-clip" }
+shockwave-config = { path = "../shockwave-config" }
 shockwave-math = { path = "../shockwave-math" }
 shockwave-gcode = { path = "../shockwave-gcode" }
 shockwave-iso = { path = "../shockwave-iso" }
