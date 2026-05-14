@@ -1,3 +1,4 @@
+mod config;
 mod job;
 
 use std::fs;
@@ -8,6 +9,7 @@ use shockwave_math::geometry::{Bounds, Triangle};
 use shockwave_path::LayerToolpaths;
 use shockwave_slicer::{SliceSettings, write_gcode};
 
+pub use config::{load_kernel_propagation, runtime_slice_settings};
 pub use job::{
     SliceDebugOutput, SliceJobOutput, SliceJobRequest, run_slice_debug_outputs, run_slice_job,
 };
@@ -119,8 +121,7 @@ fn temporary_path(path: &Path) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
-    use shockwave_math::geometry::Vec3;
-    use shockwave_slicer::{FieldPropagation, SliceSettings};
+    use shockwave_config::{Dimensions3, SlicerSettings};
 
     use super::*;
 
@@ -187,7 +188,7 @@ mod tests {
         };
         let mut progress = |_| {};
         let mut timing = ignore_timing;
-        let output = run_slice_job(&request, &test_settings(), &mut progress, &mut timing).unwrap();
+        let output = run_slice_job(&request, &test_config(), &mut progress, &mut timing).unwrap();
 
         assert_eq!(output.triangle_count, 12);
         assert!(output.occupied_count > 0);
@@ -205,39 +206,14 @@ mod tests {
 
     fn ignore_timing(_: &str, _: std::time::Duration) {}
 
-    fn test_settings() -> SliceSettings {
-        SliceSettings {
-            voxel_size: Vec3 {
-                x: 1.0,
-                y: 1.0,
-                z: 1.0,
-            },
-            requested_size: Some(Vec3 {
-                x: 4.0,
-                y: 4.0,
-                z: 4.0,
-            }),
-            padding_voxels: 0,
-            origin: None,
-            field_enabled: false,
-            propagation: FieldPropagation::Trapezoid,
-            field_rate: Vec3 {
-                x: 3.7,
-                y: 3.7,
-                z: 1.0,
-            },
-            max_unreached_below_mm: 5.0,
-            unreached_cone_angle_degrees: 55.0,
-            iso_spacing: 1.0,
-            wall_count: 1,
-            extrusion_width_mm: 0.45,
-            filament_diameter_mm: 1.75,
-            bed_temperature_c: 60,
-            nozzle_temperature_c: 215,
-            fan_speed_percent: 100,
-            global_z_offset_mm: 0.0,
-            infill_spacing_mm: None,
-        }
+    fn test_config() -> SlicerSettings {
+        let mut settings = SlicerSettings::default();
+        settings.field.enabled = false;
+        settings.field.voxel_size_mm = Dimensions3::uniform(1.0);
+        settings.printer.print_volume_mm = Dimensions3::uniform(4.0);
+        settings.slicing.padding_voxels = 0;
+        settings.output.gcode = false;
+        settings
     }
 
     fn cube_ascii_stl() -> &'static str {

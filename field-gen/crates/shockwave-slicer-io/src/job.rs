@@ -2,6 +2,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+use shockwave_config::SlicerSettings;
 use shockwave_iso::{IsosurfaceSet, extract_regular_isosurfaces};
 use shockwave_math::geometry::{Triangle, mesh_bounds};
 use shockwave_math::grid::Grid;
@@ -15,6 +16,7 @@ use shockwave_slicer::{
 };
 use shockwave_voxel::field::Field;
 
+use crate::runtime_slice_settings;
 use crate::{SliceOutputPaths, load_stl_model, write_gcode_atomically};
 
 #[derive(Clone, Debug)]
@@ -42,14 +44,24 @@ pub struct SliceJobOutput {
 
 pub fn run_slice_job(
     request: &SliceJobRequest,
-    settings: &SliceSettings,
+    settings: &SlicerSettings,
     progress: &mut impl FnMut(SliceProgress),
     timing: &mut impl FnMut(&str, Duration),
 ) -> Result<SliceJobOutput, String> {
     let load_start = Instant::now();
     let triangles = load_stl_model(&request.input)?;
     timing("load stl", load_start.elapsed());
-    run_slice_debug_outputs(request, settings, &triangles, progress, timing)
+    let runtime_settings = runtime_slice_settings(settings, timing)?;
+    let request = SliceJobRequest {
+        input: request.input.clone(),
+        output_prefix: request.output_prefix.clone(),
+        debug_output: SliceDebugOutput {
+            export_ply: settings.output.export_ply,
+            gcode: settings.output.gcode,
+        },
+        kernel_path: settings.field.kernel_path.clone(),
+    };
+    run_slice_debug_outputs(&request, &runtime_settings, &triangles, progress, timing)
 }
 
 pub fn run_slice_debug_outputs(
