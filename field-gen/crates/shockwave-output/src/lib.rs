@@ -1,6 +1,7 @@
 use std::fs;
 use std::path::Path;
 
+use serde::ser::{Serialize, SerializeStruct, Serializer};
 use shockwave_iso::IsosurfaceSet;
 use shockwave_math::geometry::{Bounds, Vec3};
 use shockwave_math::grid::Grid;
@@ -194,120 +195,206 @@ fn encode_field_distance(field: &Field, index: usize) -> u8 {
 
 pub fn metadata_json(document: &MetadataDocument<'_>) -> String {
     format!(
-        concat!(
-            "{{\n",
-            "  \"input\": \"{}\",\n",
-            "  \"units\": \"mm\",\n",
-            "  \"layout\": \"x-fastest-u8\",\n",
-            "  \"occupancy_file\": \"{}\",\n",
-            "  \"image_file\": \"{}\",\n",
-            "  \"isosurface_file\": {},\n",
-            "  \"clipped_isosurface_file\": {},\n",
-            "  \"mesh_format\": \"binary_little_endian_ply\",\n",
-            "  \"image_format\": \"bmp-r-field-g-occupancy-slice-atlas\",\n",
-            "  \"image_grid\": [{}, {}],\n",
-            "  \"image_size_px\": [{}, {}],\n",
-            "  \"dimensions\": [{}, {}, {}],\n",
-            "  \"voxel_size_mm\": [{:.9}, {:.9}, {:.9}],\n",
-            "  \"padding_voxels\": {},\n",
-            "  \"field_enabled\": {},\n",
-            "  \"field_method\": {},\n",
-            "  \"kernel_file\": {},\n",
-            "  \"field_rate\": [{:.9}, {:.9}, {:.9}],\n",
-            "  \"max_unreached_below_mm\": {},\n",
-            "  \"unreached_cone_angle_degrees\": {},\n",
-            "  \"field_extension_voxels\": {},\n",
-            "  \"iso_spacing\": {},\n",
-            "  \"field_max_distance\": {},\n",
-            "  \"origin_mm\": [{:.9}, {:.9}, {:.9}],\n",
-            "  \"actual_size_mm\": [{:.9}, {:.9}, {:.9}],\n",
-            "  \"model_bounds_min_mm\": [{:.9}, {:.9}, {:.9}],\n",
-            "  \"model_bounds_max_mm\": [{:.9}, {:.9}, {:.9}],\n",
-            "  \"occupied_voxels\": {},\n",
-            "  \"total_voxels\": {}\n",
-            "}}\n"
-        ),
-        json_escape(document.metadata.input),
-        json_escape(&document.volume_path.display().to_string()),
-        json_escape(&document.image_path.display().to_string()),
-        path_json(document.mesh_path),
-        path_json(document.clipped_mesh_path),
-        document.atlas.columns,
-        document.atlas.rows,
-        document.atlas.width,
-        document.atlas.height,
-        document.grid.dims[0],
-        document.grid.dims[1],
-        document.grid.dims[2],
-        document.metadata.voxel_size.x,
-        document.metadata.voxel_size.y,
-        document.metadata.voxel_size.z,
-        document.metadata.padding_voxels,
-        document.metadata.field_enabled,
-        string_or_null_json(if document.metadata.field_enabled {
-            Some(document.metadata.field_method)
-        } else {
-            None
-        }),
-        string_or_null_json(document.metadata.kernel_path),
-        document.metadata.field_rate.x,
-        document.metadata.field_rate.y,
-        document.metadata.field_rate.z,
-        if document.metadata.field_enabled {
-            format!("{:.9}", document.metadata.max_unreached_below_mm)
-        } else {
-            "null".to_string()
-        },
-        if document.metadata.field_enabled {
-            format!("{:.9}", document.metadata.unreached_cone_angle_degrees)
-        } else {
-            "null".to_string()
-        },
-        if document.metadata.field_enabled {
-            document.metadata.field_extension_voxels
-        } else {
-            0
-        },
-        if document.metadata.field_enabled {
-            format!("{:.9}", document.metadata.iso_spacing)
-        } else {
-            "null".to_string()
-        },
-        field_max_distance_json(document.field),
-        document.grid.origin.x,
-        document.grid.origin.y,
-        document.grid.origin.z,
-        document.grid.actual_size.x,
-        document.grid.actual_size.y,
-        document.grid.actual_size.z,
-        document.bounds.min.x,
-        document.bounds.min.y,
-        document.bounds.min.z,
-        document.bounds.max.x,
-        document.bounds.max.y,
-        document.bounds.max.z,
-        document.occupied_count,
-        document.voxel_count,
+        "{}\n",
+        serde_json::to_string_pretty(document).expect("metadata should be serializable")
     )
 }
 
-fn json_escape(value: &str) -> String {
-    value.replace('\\', "\\\\").replace('"', "\\\"")
+impl Serialize for MetadataDocument<'_> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let field_enabled = self.metadata.field_enabled;
+        let mut state = serializer.serialize_struct("MetadataDocument", 29)?;
+        state.serialize_field("input", self.metadata.input)?;
+        state.serialize_field("units", "mm")?;
+        state.serialize_field("layout", "x-fastest-u8")?;
+        state.serialize_field("occupancy_file", &path_string(self.volume_path))?;
+        state.serialize_field("image_file", &path_string(self.image_path))?;
+        state.serialize_field("isosurface_file", &self.mesh_path.map(path_string))?;
+        state.serialize_field(
+            "clipped_isosurface_file",
+            &self.clipped_mesh_path.map(path_string),
+        )?;
+        state.serialize_field("mesh_format", "binary_little_endian_ply")?;
+        state.serialize_field("image_format", "bmp-r-field-g-occupancy-slice-atlas")?;
+        state.serialize_field("image_grid", &[self.atlas.columns, self.atlas.rows])?;
+        state.serialize_field("image_size_px", &[self.atlas.width, self.atlas.height])?;
+        state.serialize_field("dimensions", &self.grid.dims)?;
+        state.serialize_field("voxel_size_mm", &vec3_array(self.metadata.voxel_size))?;
+        state.serialize_field("padding_voxels", &self.metadata.padding_voxels)?;
+        state.serialize_field("field_enabled", &field_enabled)?;
+        state.serialize_field(
+            "field_method",
+            &field_enabled.then_some(self.metadata.field_method),
+        )?;
+        state.serialize_field("kernel_file", &self.metadata.kernel_path)?;
+        state.serialize_field("field_rate", &vec3_array(self.metadata.field_rate))?;
+        state.serialize_field(
+            "max_unreached_below_mm",
+            &field_enabled.then_some(self.metadata.max_unreached_below_mm),
+        )?;
+        state.serialize_field(
+            "unreached_cone_angle_degrees",
+            &field_enabled.then_some(self.metadata.unreached_cone_angle_degrees),
+        )?;
+        state.serialize_field(
+            "field_extension_voxels",
+            &if field_enabled {
+                self.metadata.field_extension_voxels
+            } else {
+                0
+            },
+        )?;
+        state.serialize_field(
+            "iso_spacing",
+            &field_enabled.then_some(self.metadata.iso_spacing),
+        )?;
+        state.serialize_field(
+            "field_max_distance",
+            &self.field.map(|field| field.max_distance),
+        )?;
+        state.serialize_field("origin_mm", &vec3_array(self.grid.origin))?;
+        state.serialize_field("actual_size_mm", &vec3_array(self.grid.actual_size))?;
+        state.serialize_field("model_bounds_min_mm", &vec3_array(self.bounds.min))?;
+        state.serialize_field("model_bounds_max_mm", &vec3_array(self.bounds.max))?;
+        state.serialize_field("occupied_voxels", &self.occupied_count)?;
+        state.serialize_field("total_voxels", &self.voxel_count)?;
+        state.end()
+    }
 }
 
-fn path_json(path: Option<&Path>) -> String {
-    path.map(|path| format!("\"{}\"", json_escape(&path.display().to_string())))
-        .unwrap_or_else(|| "null".to_string())
+fn path_string(path: &Path) -> String {
+    path.display().to_string()
 }
 
-fn string_or_null_json(value: Option<&str>) -> String {
-    value
-        .map(|value| format!("\"{}\"", json_escape(value)))
-        .unwrap_or_else(|| "null".to_string())
+fn vec3_array(value: Vec3) -> [f64; 3] {
+    [value.x, value.y, value.z]
 }
 
-fn field_max_distance_json(field: Option<&Field>) -> String {
-    field
-        .map(|field| format!("{:.9}", field.max_distance))
-        .unwrap_or_else(|| "null".to_string())
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use serde_json::Value;
+    use shockwave_math::geometry::{Bounds, Vec3};
+    use shockwave_math::grid::Grid;
+    use shockwave_voxel::field::Field;
+
+    use super::*;
+
+    #[test]
+    fn metadata_json_serializes_valid_json() {
+        let volume_path = Path::new("out/part.occ");
+        let image_path = Path::new("out/part.bmp");
+        let mesh_path = Path::new("out/part.ply");
+        let field = Field {
+            distances: vec![0.0],
+            max_distance: 12.5,
+        };
+        let document = MetadataDocument {
+            metadata: Metadata {
+                input: "input/part \"quoted\".stl",
+                voxel_size: v(0.4, 0.5, 0.6),
+                padding_voxels: 3,
+                field_enabled: true,
+                field_method: "trapezoid",
+                kernel_path: Some("kernels\\field.json"),
+                field_rate: v(3.7, 3.7, 1.0),
+                max_unreached_below_mm: 5.0,
+                unreached_cone_angle_degrees: 55.0,
+                field_extension_voxels: 2,
+                iso_spacing: 0.25,
+            },
+            bounds: Bounds {
+                min: v(1.0, 2.0, 3.0),
+                max: v(4.0, 5.0, 6.0),
+            },
+            grid: Grid {
+                origin: v(-1.0, -2.0, -3.0),
+                dims: [2, 3, 4],
+                voxel_size: v(0.4, 0.5, 0.6),
+                actual_size: v(0.8, 1.5, 2.4),
+            },
+            atlas: Atlas {
+                columns: 2,
+                rows: 2,
+                width: 4,
+                height: 6,
+            },
+            volume_path,
+            image_path,
+            mesh_path: Some(mesh_path),
+            clipped_mesh_path: None,
+            field: Some(&field),
+            occupied_count: 7,
+            voxel_count: 24,
+        };
+
+        let json: Value = serde_json::from_str(&metadata_json(&document)).unwrap();
+
+        assert_eq!(json["input"], "input/part \"quoted\".stl");
+        assert_eq!(json["occupancy_file"], "out/part.occ");
+        assert_eq!(json["isosurface_file"], "out/part.ply");
+        assert_eq!(json["clipped_isosurface_file"], Value::Null);
+        assert_eq!(json["dimensions"], serde_json::json!([2, 3, 4]));
+        assert_eq!(json["field_method"], "trapezoid");
+        assert_eq!(json["field_max_distance"], 12.5);
+    }
+
+    #[test]
+    fn metadata_json_nulls_field_values_when_field_disabled() {
+        let document = MetadataDocument {
+            metadata: Metadata {
+                input: "input/part.stl",
+                voxel_size: v(1.0, 1.0, 1.0),
+                padding_voxels: 0,
+                field_enabled: false,
+                field_method: "trapezoid",
+                kernel_path: None,
+                field_rate: v(1.0, 1.0, 1.0),
+                max_unreached_below_mm: 5.0,
+                unreached_cone_angle_degrees: 55.0,
+                field_extension_voxels: 2,
+                iso_spacing: 0.25,
+            },
+            bounds: Bounds {
+                min: v(0.0, 0.0, 0.0),
+                max: v(1.0, 1.0, 1.0),
+            },
+            grid: Grid {
+                origin: v(0.0, 0.0, 0.0),
+                dims: [1, 1, 1],
+                voxel_size: v(1.0, 1.0, 1.0),
+                actual_size: v(1.0, 1.0, 1.0),
+            },
+            atlas: Atlas {
+                columns: 1,
+                rows: 1,
+                width: 1,
+                height: 1,
+            },
+            volume_path: Path::new("out/part.occ"),
+            image_path: Path::new("out/part.bmp"),
+            mesh_path: None,
+            clipped_mesh_path: None,
+            field: None,
+            occupied_count: 1,
+            voxel_count: 1,
+        };
+
+        let json: Value = serde_json::from_str(&metadata_json(&document)).unwrap();
+
+        assert_eq!(json["field_method"], Value::Null);
+        assert_eq!(json["max_unreached_below_mm"], Value::Null);
+        assert_eq!(json["unreached_cone_angle_degrees"], Value::Null);
+        assert_eq!(json["field_extension_voxels"], 0);
+        assert_eq!(json["iso_spacing"], Value::Null);
+        assert_eq!(json["field_max_distance"], Value::Null);
+    }
+
+    fn v(x: f64, y: f64, z: f64) -> Vec3 {
+        Vec3 { x, y, z }
+    }
 }
