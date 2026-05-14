@@ -114,7 +114,7 @@ mod tests {
         let settings_path = settings_path_in_config_dir(unique_temp_path("cli-config"));
         let mut settings = SlicerSettings::default();
         settings.slicing.layer_height_mm = 0.3;
-        settings.slicing.voxel_size_mm = Dimensions3::uniform(0.8);
+        settings.field.voxel_size_mm = Dimensions3::uniform(0.8);
         settings.output.export_ply = true;
         save_settings(&settings_path, &settings).unwrap();
 
@@ -131,7 +131,7 @@ mod tests {
         assert_eq!(config.output_prefix, PathBuf::from("out/part"));
         assert_eq!(config.settings.slicing.layer_height_mm, 0.3);
         assert_eq!(
-            config.settings.slicing.voxel_size_mm,
+            config.settings.field.voxel_size_mm,
             Dimensions3::uniform(0.8)
         );
         assert!(config.settings.output.export_ply);

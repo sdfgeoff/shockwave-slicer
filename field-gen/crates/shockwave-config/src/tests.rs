@@ -7,7 +7,6 @@ fn defaults_match_current_slicer_behavior() {
     let settings = SlicerSettings::default();
 
     assert_eq!(settings.slicing.layer_height_mm, 0.25);
-    assert_eq!(settings.slicing.voxel_size_mm, Dimensions3::uniform(0.4));
     assert_eq!(settings.slicing.wall_count, 6);
     assert_eq!(settings.slicing.extrusion_width_mm, 0.45);
     assert_eq!(settings.slicing.infill_line_spacing_mm(), Some(4.0));
@@ -26,6 +25,7 @@ fn defaults_match_current_slicer_behavior() {
     assert_eq!(settings.material.nozzle_temperature_c, 215);
     assert_eq!(settings.material.bed_temperature_c, 60);
     assert!(settings.field.enabled);
+    assert_eq!(settings.field.voxel_size_mm, Dimensions3::uniform(0.4));
     assert_eq!(settings.field.method, FieldMethod::Trapezoid);
     assert_eq!(settings.field.kernel_path, None);
     assert!(!settings.output.export_ply);

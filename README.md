@@ -51,6 +51,7 @@ To use an explicit growth kernel, set `field.kernel_path` in the slicer settings
 {
   "field": {
     "enabled": true,
+    "voxel_size_mm": { "x": 0.4, "y": 0.4, "z": 0.4 },
     "method": "trapezoid",
     "anisotropic_rate": { "x": 3.7, "y": 3.7, "z": 1.0 },
     "kernel_path": "kernel.json"

@@ -62,7 +62,7 @@ fn slicer_settings_from_config(config: &cli::Config) -> Result<SliceSettings, St
     };
 
     Ok(SliceSettings {
-        voxel_size: vec3_from_dimensions(settings.slicing.voxel_size_mm),
+        voxel_size: vec3_from_dimensions(settings.field.voxel_size_mm),
         requested_size: Some(vec3_from_dimensions(settings.printer.print_volume_mm)),
         padding_voxels: settings.slicing.padding_voxels,
         origin: settings.slicing.origin_mm.map(vec3_from_dimensions),

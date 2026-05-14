@@ -1,11 +1,6 @@
 {
   "slicing": {
     "layer_height_mm": 0.25,
-    "voxel_size_mm": {
-      "x": 0.4,
-      "y": 0.4,
-      "z": 0.4
-    },
     "origin_mm": null,
     "padding_voxels": 3,
     "wall_count": 6,
@@ -32,6 +27,11 @@
   },
   "field": {
     "enabled": true,
+    "voxel_size_mm": {
+      "x": 0.4,
+      "y": 0.4,
+      "z": 0.4
+    },
     "method": "trapezoid",
     "anisotropic_rate": {
       "x": 3.7,

@@ -57,7 +57,6 @@ impl SlicerSettings {
 #[serde(default, deny_unknown_fields)]
 pub struct SlicingSettings {
     pub layer_height_mm: f64,
-    pub voxel_size_mm: Dimensions3,
     pub origin_mm: Option<Dimensions3>,
     pub padding_voxels: usize,
     pub wall_count: usize,
@@ -70,7 +69,6 @@ impl Default for SlicingSettings {
     fn default() -> Self {
         Self {
             layer_height_mm: 0.25,
-            voxel_size_mm: Dimensions3::uniform(0.4),
             origin_mm: None,
             padding_voxels: 3,
             wall_count: 6,
@@ -88,8 +86,6 @@ impl SlicingSettings {
 
     fn validate_into(&self, errors: &mut Vec<String>) {
         push_positive(errors, "slicing.layer_height_mm", self.layer_height_mm);
-        self.voxel_size_mm
-            .validate_positive_into(errors, "slicing.voxel_size_mm");
         if let Some(origin) = self.origin_mm {
             origin.validate_finite_into(errors, "slicing.origin_mm");
         }
@@ -211,6 +207,7 @@ impl MaterialSettings {
 #[serde(default, deny_unknown_fields)]
 pub struct FieldSettings {
     pub enabled: bool,
+    pub voxel_size_mm: Dimensions3,
     pub method: FieldMethod,
     pub anisotropic_rate: Dimensions3,
     pub kernel_path: Option<PathBuf>,
@@ -220,6 +217,7 @@ impl Default for FieldSettings {
     fn default() -> Self {
         Self {
             enabled: true,
+            voxel_size_mm: Dimensions3::uniform(0.4),
             method: FieldMethod::Trapezoid,
             anisotropic_rate: Dimensions3 {
                 x: 3.7,
@@ -233,6 +231,8 @@ impl Default for FieldSettings {
 
 impl FieldSettings {
     fn validate_into(&self, errors: &mut Vec<String>) {
+        self.voxel_size_mm
+            .validate_positive_into(errors, "field.voxel_size_mm");
         self.anisotropic_rate
             .validate_positive_into(errors, "field.anisotropic_rate");
     }
