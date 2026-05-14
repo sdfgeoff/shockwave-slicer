@@ -7,6 +7,9 @@ pub struct MarlinConfig {
     pub travel_feedrate_mm_min: f64,
     pub print_feedrate_mm_min: f64,
     pub coordinate_offset: Vec3,
+    pub bed_temperature_c: u16,
+    pub nozzle_temperature_c: u16,
+    pub fan_speed_percent: u8,
 }
 
 impl Default for MarlinConfig {
@@ -20,6 +23,9 @@ impl Default for MarlinConfig {
                 y: 0.0,
                 z: 0.0,
             },
+            bed_temperature_c: 60,
+            nozzle_temperature_c: 215,
+            fan_speed_percent: 100,
         }
     }
 }
@@ -31,6 +37,9 @@ pub fn write_marlin_gcode(
     if config.filament_diameter_mm <= 0.0 {
         return Err("filament diameter must be positive".to_string());
     }
+    if config.fan_speed_percent > 100 {
+        return Err("fan speed percent must be between 0 and 100".to_string());
+    }
 
     let filament_area = std::f64::consts::PI * (config.filament_diameter_mm * 0.5).powi(2);
     let mut extrusion_mm = 0.0;
@@ -39,11 +48,25 @@ pub fn write_marlin_gcode(
     output.push_str("G21 ; millimeters\n");
     output.push_str("G90 ; absolute coordinates\n");
     output.push_str("M82 ; absolute extrusion\n");
-    output.push_str("M190 S60 ; set bed temperature and wait for it to be reached\n");
+    output.push_str(&format!(
+        "M190 S{} ; set bed temperature and wait for it to be reached\n",
+        config.bed_temperature_c
+    ));
     output.push_str("G28 ; home all axes\n");
     output.push_str("G1 Z5 F5000 ; lift nozzle\n");
-    output.push_str("M109 S215 ; Nozzle temperature\n");
-    output.push_str("M106 ; Turn on fan\n");
+    output.push_str(&format!(
+        "M109 S{} ; Nozzle temperature\n",
+        config.nozzle_temperature_c
+    ));
+    if config.fan_speed_percent == 0 {
+        output.push_str("M107 ; Turn off fan\n");
+    } else {
+        output.push_str(&format!(
+            "M106 S{} ; Fan speed {}%\n",
+            fan_pwm(config.fan_speed_percent),
+            config.fan_speed_percent
+        ));
+    }
     output.push('\n');
     output.push_str("; extrude a small amount of waste material\n");
     output.push_str("G92 E0\n");
@@ -124,6 +147,10 @@ pub fn write_marlin_gcode(
 
     output.push_str("; end of shockwave-layers gcode\n");
     Ok(output)
+}
+
+pub fn fan_pwm(percent: u8) -> u8 {
+    ((percent.min(100) as f64 / 100.0) * 255.0).round() as u8
 }
 
 fn ordered_path_indices(layer: &LayerToolpaths) -> Vec<usize> {
@@ -304,11 +331,52 @@ mod tests {
         assert!(gcode.contains("G28 ; home all axes"));
         assert!(gcode.contains("G1 Z5 F5000 ; lift nozzle"));
         assert!(gcode.contains("M109 S215 ; Nozzle temperature"));
+        assert!(gcode.contains("M106 S255 ; Fan speed 100%"));
         assert!(gcode.contains("G1 E20 F200"));
         assert!(gcode.contains("G1 X10.00000 Y0.00000 Z0.20000 E"));
         assert!(gcode.contains(";LAYER_CHANGE"));
         assert!(gcode.contains(";TYPE:Perimeter"));
         assert!(gcode.contains("; end of shockwave-layers gcode"));
+    }
+
+    #[test]
+    fn writes_configured_temperatures_and_fan_speed() {
+        let gcode = write_marlin_gcode(
+            &[],
+            MarlinConfig {
+                bed_temperature_c: 70,
+                nozzle_temperature_c: 230,
+                fan_speed_percent: 50,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        assert!(gcode.contains("M190 S70 ; set bed temperature"));
+        assert!(gcode.contains("M109 S230 ; Nozzle temperature"));
+        assert!(gcode.contains("M106 S128 ; Fan speed 50%"));
+    }
+
+    #[test]
+    fn writes_fan_off_for_zero_percent() {
+        let gcode = write_marlin_gcode(
+            &[],
+            MarlinConfig {
+                fan_speed_percent: 0,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        assert!(gcode.contains("M107 ; Turn off fan"));
+        assert!(!gcode.contains("M106"));
+    }
+
+    #[test]
+    fn maps_fan_percent_to_marlin_pwm() {
+        assert_eq!(fan_pwm(0), 0);
+        assert_eq!(fan_pwm(50), 128);
+        assert_eq!(fan_pwm(100), 255);
     }
 
     #[test]

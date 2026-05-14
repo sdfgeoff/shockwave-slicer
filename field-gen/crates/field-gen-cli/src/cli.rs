@@ -24,6 +24,10 @@ pub struct Config {
     pub wall_count: usize,
     pub extrusion_width_mm: f64,
     pub filament_diameter_mm: f64,
+    pub bed_temperature_c: u16,
+    pub nozzle_temperature_c: u16,
+    pub fan_speed_percent: u8,
+    pub global_z_offset_mm: f64,
     pub infill_spacing_mm: Option<f64>,
 }
 
@@ -58,6 +62,10 @@ pub fn parse_args(args: Vec<String>) -> Result<Config, String> {
     let mut wall_count = settings.slicing.wall_count;
     let mut extrusion_width_mm = settings.slicing.extrusion_width_mm;
     let mut filament_diameter_mm = settings.material.filament_diameter_mm;
+    let mut bed_temperature_c = settings.material.bed_temperature_c;
+    let mut nozzle_temperature_c = settings.material.nozzle_temperature_c;
+    let mut fan_speed_percent = settings.material.fan_speed_percent;
+    let mut global_z_offset_mm = settings.slicing.global_z_offset_mm;
     let mut infill_spacing_mm = settings.slicing.infill_line_spacing_mm();
     let mut index = 1;
 
@@ -146,6 +154,22 @@ pub fn parse_args(args: Vec<String>) -> Result<Config, String> {
                 index += 1;
                 filament_diameter_mm = parse_positive_number("--filament-diameter", &args, index)?;
             }
+            "--bed-temperature" => {
+                index += 1;
+                bed_temperature_c = parse_u16("--bed-temperature", &args, index)?;
+            }
+            "--nozzle-temperature" => {
+                index += 1;
+                nozzle_temperature_c = parse_u16("--nozzle-temperature", &args, index)?;
+            }
+            "--fan-speed" => {
+                index += 1;
+                fan_speed_percent = parse_fan_speed_percent("--fan-speed", &args, index)?;
+            }
+            "--global-z-offset" => {
+                index += 1;
+                global_z_offset_mm = parse_finite_number("--global-z-offset", &args, index)?;
+            }
             "--infill-spacing" => {
                 index += 1;
                 let spacing = parse_non_negative_number("--infill-spacing", &args, index)?;
@@ -201,6 +225,10 @@ pub fn parse_args(args: Vec<String>) -> Result<Config, String> {
         wall_count,
         extrusion_width_mm,
         filament_diameter_mm,
+        bed_temperature_c,
+        nozzle_temperature_c,
+        fan_speed_percent,
+        global_z_offset_mm,
         infill_spacing_mm,
     })
 }
@@ -292,13 +320,21 @@ fn parse_non_negative_number(flag: &str, args: &[String], index: usize) -> Resul
 }
 
 fn parse_positive_number(flag: &str, args: &[String], index: usize) -> Result<f64, String> {
-    let value = args
-        .get(index)
-        .ok_or_else(|| format!("{flag} requires a positive numeric value"))?
-        .parse()
-        .map_err(|_| format!("{flag} must be numeric"))?;
+    let value = parse_finite_number(flag, args, index)?;
     if value <= 0.0 || !f64::is_finite(value) {
         return Err(format!("{flag} must be a finite number greater than zero"));
+    }
+    Ok(value)
+}
+
+fn parse_finite_number(flag: &str, args: &[String], index: usize) -> Result<f64, String> {
+    let value = args
+        .get(index)
+        .ok_or_else(|| format!("{flag} requires a numeric value"))?
+        .parse()
+        .map_err(|_| format!("{flag} must be numeric"))?;
+    if !f64::is_finite(value) {
+        return Err(format!("{flag} must be finite"));
     }
     Ok(value)
 }
@@ -323,8 +359,27 @@ fn parse_percentage(flag: &str, args: &[String], index: usize) -> Result<f64, St
     Ok(value)
 }
 
+fn parse_u16(flag: &str, args: &[String], index: usize) -> Result<u16, String> {
+    args.get(index)
+        .ok_or_else(|| format!("{flag} requires an integer value"))?
+        .parse()
+        .map_err(|_| format!("{flag} must be an integer in the range 0..=65535"))
+}
+
+fn parse_fan_speed_percent(flag: &str, args: &[String], index: usize) -> Result<u8, String> {
+    let value: u8 = args
+        .get(index)
+        .ok_or_else(|| format!("{flag} requires an integer percentage"))?
+        .parse()
+        .map_err(|_| format!("{flag} must be an integer percentage in the range 0..=100"))?;
+    if value > 100 {
+        return Err(format!("{flag} must be in the range 0..=100"));
+    }
+    Ok(value)
+}
+
 fn usage() -> String {
-    "usage: field-gen <input.stl> [--config <settings.json>] [--voxel <x-mm> <y-mm> <z-mm>] [--size <x-mm> <y-mm> <z-mm>] [--padding-voxels <n>] [--origin <x-mm> <y-mm> <z-mm>] [--field] [--field-method <anisotropic|trapezoid>] [--field-rate <x> <y> <z>] [--kernel <kernel.json>] [--max-unreached-below <mm>] [--unreached-cone-angle <degrees>] [--iso-spacing <distance>] [--export-ply] [--gcode] [--wall-count <n>] [--extrusion-width <mm>] [--filament-diameter <mm>] [--infill-spacing <mm>] [--infill-percentage <percent>] [--output <prefix>]\n\
+    "usage: field-gen <input.stl> [--config <settings.json>] [--voxel <x-mm> <y-mm> <z-mm>] [--size <x-mm> <y-mm> <z-mm>] [--padding-voxels <n>] [--origin <x-mm> <y-mm> <z-mm>] [--field] [--field-method <anisotropic|trapezoid>] [--field-rate <x> <y> <z>] [--kernel <kernel.json>] [--max-unreached-below <mm>] [--unreached-cone-angle <degrees>] [--iso-spacing <distance>] [--export-ply] [--gcode] [--wall-count <n>] [--extrusion-width <mm>] [--filament-diameter <mm>] [--bed-temperature <c>] [--nozzle-temperature <c>] [--fan-speed <percent>] [--global-z-offset <mm>] [--infill-spacing <mm>] [--infill-percentage <percent>] [--output <prefix>]\n\
 \n\
 STL coordinates are assumed to be millimeters. Defaults come from SlicerSettings or --config when provided.\n\
 If --size is provided, it is treated as a maximum grid size; otherwise printer.print_volume_mm is used.\n\
@@ -336,6 +391,7 @@ If --size is provided, it is treated as a maximum grid size; otherwise printer.p
 --iso-spacing controls the spacing between exported isosurface levels when --field is enabled.\n\
 --export-ply writes unclipped and clipped isosurface PLY files; PLY output is disabled by default.\n\
 --gcode writes experimental Marlin G-code from clipped isosurfaces and implies --field.\n\
+--bed-temperature, --nozzle-temperature, --fan-speed, and --global-z-offset control G-code emission only.\n\
 Use --infill-spacing 0 or --infill-percentage 0 to disable infill.\n\
 Voxel size takes priority: grid dimensions are ceil(size / voxel), so actual size may expand slightly."
         .to_string()
@@ -357,6 +413,10 @@ mod tests {
         assert_eq!(config.iso_spacing, 0.25);
         assert_eq!(config.wall_count, 6);
         assert_eq!(config.extrusion_width_mm, 0.45);
+        assert_eq!(config.bed_temperature_c, 60);
+        assert_eq!(config.nozzle_temperature_c, 215);
+        assert_eq!(config.fan_speed_percent, 100);
+        assert_eq!(config.global_z_offset_mm, 0.0);
         assert_eq!(config.infill_spacing_mm, Some(4.0));
     }
 
@@ -367,6 +427,10 @@ mod tests {
         settings.slicing.layer_height_mm = 0.3;
         settings.slicing.voxel_size_mm = Dimensions3::uniform(0.8);
         settings.slicing.infill_percentage = 50.0;
+        settings.slicing.global_z_offset_mm = 0.05;
+        settings.material.bed_temperature_c = 70;
+        settings.material.nozzle_temperature_c = 230;
+        settings.material.fan_speed_percent = 25;
         settings.printer.print_volume_mm = Dimensions3 {
             x: 180.0,
             y: 181.0,
@@ -384,6 +448,8 @@ mod tests {
             "1".to_string(),
             "2".to_string(),
             "3".to_string(),
+            "--fan-speed".to_string(),
+            "75".to_string(),
         ])
         .unwrap();
 
@@ -393,6 +459,10 @@ mod tests {
         assert_eq!(config.voxel_size.z, 3.0);
         assert_eq!(config.requested_size.unwrap().x, 180.0);
         assert_eq!(config.infill_spacing_mm, Some(0.9));
+        assert_eq!(config.global_z_offset_mm, 0.05);
+        assert_eq!(config.bed_temperature_c, 70);
+        assert_eq!(config.nozzle_temperature_c, 230);
+        assert_eq!(config.fan_speed_percent, 75);
     }
 
     #[test]

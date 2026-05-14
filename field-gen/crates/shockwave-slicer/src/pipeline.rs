@@ -288,6 +288,10 @@ mod tests {
             wall_count: 2,
             extrusion_width_mm: 0.4,
             filament_diameter_mm: 1.75,
+            bed_temperature_c: 60,
+            nozzle_temperature_c: 215,
+            fan_speed_percent: 100,
+            global_z_offset_mm: 0.0,
             infill_spacing_mm: Some(2.0),
         }
     }

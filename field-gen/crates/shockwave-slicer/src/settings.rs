@@ -20,6 +20,10 @@ pub struct SliceSettings {
     pub wall_count: usize,
     pub extrusion_width_mm: f64,
     pub filament_diameter_mm: f64,
+    pub bed_temperature_c: u16,
+    pub nozzle_temperature_c: u16,
+    pub fan_speed_percent: u8,
+    pub global_z_offset_mm: f64,
     pub infill_spacing_mm: Option<f64>,
 }
 

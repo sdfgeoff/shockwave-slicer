@@ -72,6 +72,10 @@ fn slicer_settings_from_config(config: &cli::Config) -> Result<SliceSettings, St
         wall_count: config.wall_count,
         extrusion_width_mm: config.extrusion_width_mm,
         filament_diameter_mm: config.filament_diameter_mm,
+        bed_temperature_c: config.bed_temperature_c,
+        nozzle_temperature_c: config.nozzle_temperature_c,
+        fan_speed_percent: config.fan_speed_percent,
+        global_z_offset_mm: config.global_z_offset_mm,
         infill_spacing_mm: config.infill_spacing_mm,
     })
 }
