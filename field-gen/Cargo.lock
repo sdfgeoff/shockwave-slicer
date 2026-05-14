@@ -46,6 +46,7 @@ dependencies = [
  "shockwave-math",
  "shockwave-output",
  "shockwave-path",
+ "shockwave-slicer",
  "shockwave-stl",
  "shockwave-voxel",
 ]
@@ -211,6 +212,20 @@ dependencies = [
  "shockwave-geodesic",
  "shockwave-math",
  "shockwave-mesh",
+]
+
+[[package]]
+name = "shockwave-slicer"
+version = "0.1.0"
+dependencies = [
+ "rayon",
+ "shockwave-clip",
+ "shockwave-config",
+ "shockwave-gcode",
+ "shockwave-iso",
+ "shockwave-math",
+ "shockwave-path",
+ "shockwave-voxel",
 ]
 
 [[package]]

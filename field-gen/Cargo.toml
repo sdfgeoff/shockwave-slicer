@@ -10,6 +10,7 @@ members = [
     "crates/shockwave-mesh",
     "crates/shockwave-output",
     "crates/shockwave-path",
+    "crates/shockwave-slicer",
     "crates/shockwave-stl",
     "crates/shockwave-voxel",
 ]

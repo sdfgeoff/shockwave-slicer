@@ -7,7 +7,6 @@ use shockwave_math::geometry::Vec3;
 #[derive(Clone, Debug)]
 pub struct Config {
     pub input: PathBuf,
-    pub settings_path: Option<PathBuf>,
     pub output_prefix: PathBuf,
     pub voxel_size: Vec3,
     pub requested_size: Option<Vec3>,
@@ -185,7 +184,6 @@ pub fn parse_args(args: Vec<String>) -> Result<Config, String> {
 
     Ok(Config {
         input,
-        settings_path,
         output_prefix,
         voxel_size,
         requested_size,
@@ -389,7 +387,6 @@ mod tests {
         ])
         .unwrap();
 
-        assert_eq!(config.settings_path, Some(settings_path));
         assert_eq!(config.iso_spacing, 0.2);
         assert_eq!(config.voxel_size.x, 1.0);
         assert_eq!(config.voxel_size.y, 2.0);

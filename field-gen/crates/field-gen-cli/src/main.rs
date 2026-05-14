@@ -1,32 +1,25 @@
 mod cli;
 
 use std::env;
-use std::f64::consts::FRAC_PI_4;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use cli::{FieldMethod, parse_args};
-use rayon::prelude::*;
+use cli::parse_args;
 use serde_json::Value;
-use shockwave_clip::{TriangleSolid, clip_mesh_to_solid};
-use shockwave_gcode::{MarlinConfig, write_marlin_gcode};
-use shockwave_iso::{Isosurface, IsosurfaceSet, extract_regular_isosurfaces};
-use shockwave_math::geometry::{Bounds, Triangle, Vec3, mesh_bounds};
-use shockwave_math::grid::{Grid, GridSpec, build_grid};
+use shockwave_iso::{IsosurfaceSet, extract_regular_isosurfaces};
+use shockwave_math::geometry::{Triangle, mesh_bounds};
+use shockwave_math::grid::Grid;
 use shockwave_output::{
     Metadata, MetadataDocument, build_atlas, metadata_json, write_occupancy_bmp, write_ply_binary,
 };
-use shockwave_path::{ContourOptions, LayerToolpaths, layer_toolpaths_from_boundary};
-use shockwave_stl::parse_stl;
-use shockwave_voxel::field::{
-    AnisotropicEuclideanPropagation, ExplicitKernelPropagation, Field, KernelMove, KernelPathCheck,
-    PropagationConstraints, PropagationMethod, StderrProgress, expand_field,
-    propagate_field_with_progress,
+use shockwave_path::LayerToolpaths;
+use shockwave_slicer::{
+    FIELD_EXTENSION_VOXELS, FieldPropagation, SliceProgress, SliceSettings,
+    clip_isosurfaces_to_solid, toolpaths_from_isosurfaces, voxelize, write_gcode,
 };
-use shockwave_voxel::voxelize::generate_occupancy;
-
-const FIELD_EXTENSION_VOXELS: usize = 2;
+use shockwave_stl::parse_stl;
+use shockwave_voxel::field::{ExplicitKernelPropagation, Field, KernelMove, KernelPathCheck};
 
 fn main() {
     if let Err(error) = run() {
@@ -39,8 +32,9 @@ fn run() -> Result<(), String> {
     let total_start = Instant::now();
     let config = parse_args(env::args().skip(1).collect())?;
     let triangles = load_mesh(&config)?;
-    let (grid, occupancy, field) = voxelize(&config, &triangles)?;
-    let paths = write_outputs(&config, &triangles, &occupancy, &field, grid)?;
+    let settings = slicer_settings_from_config(&config)?;
+    let (grid, occupancy, field) = voxelize_with_timing(&settings, &triangles)?;
+    let paths = write_outputs(&config, &settings, &triangles, &occupancy, &field, grid)?;
     print_summary(&triangles, &occupancy, grid, &paths);
     log_timing("total", total_start.elapsed());
     Ok(())
@@ -61,658 +55,226 @@ fn load_mesh(config: &cli::Config) -> Result<Vec<Triangle>, String> {
     Ok(triangles)
 }
 
-fn voxelize(
-    config: &cli::Config,
-    triangles: &[Triangle],
-) -> Result<(Grid, Vec<u8>, Option<Field>), String> {
-    let bounds = mesh_bounds(triangles);
-    let grid_start = Instant::now();
-    let grid = build_grid(
-        GridSpec {
-            voxel_size: config.voxel_size,
-            requested_size: config.requested_size,
-            padding_voxels: config.padding_voxels,
-            origin: config.origin,
-        },
-        bounds,
-    )?;
-    log_timing("build grid", grid_start.elapsed());
-
-    let occupancy_start = Instant::now();
-    let occupancy = generate_occupancy(triangles, grid);
-    log_timing("generate occupancy", occupancy_start.elapsed());
-
-    let field = if config.field_enabled {
-        let mut field = propagate_configured_field(config, &occupancy, grid)?;
-        align_field_to_model_floor(&mut field, &occupancy, grid, bounds);
-        Some(field)
-    } else {
-        None
-    };
-    Ok((grid, occupancy, field))
-}
-
-fn propagate_configured_field(
-    config: &cli::Config,
-    occupancy: &[u8],
-    grid: Grid,
-) -> Result<Field, String> {
-    if let Some(kernel_path) = &config.kernel_path {
+fn slicer_settings_from_config(config: &cli::Config) -> Result<SliceSettings, String> {
+    let propagation = if let Some(kernel_path) = &config.kernel_path {
         let load_start = Instant::now();
         let propagation = load_kernel_propagation(kernel_path)?;
         log_timing("load kernel", load_start.elapsed());
         eprintln!("Loaded kernel with {} moves", propagation.move_count());
-        propagate_and_expand(config, occupancy, grid, &propagation)
+        FieldPropagation::ExplicitKernel(propagation)
     } else {
-        match config.field_method {
-            FieldMethod::Anisotropic => {
-                let propagation = AnisotropicEuclideanPropagation::new(config.field_rate);
-                propagate_and_expand(config, occupancy, grid, &propagation)
-            }
-            FieldMethod::Trapezoid => {
-                let load_start = Instant::now();
-                let propagation = trapezoid_propagation(grid)?;
-                log_timing("generate trapezoid kernel", load_start.elapsed());
-                eprintln!(
-                    "Generated native trapezoid kernel with {} moves",
-                    propagation.move_count()
-                );
-                propagate_and_expand(config, occupancy, grid, &propagation)
-            }
-        }
-    }
-}
-
-fn align_field_to_model_floor(field: &mut Field, occupancy: &[u8], grid: Grid, bounds: Bounds) {
-    let Some(lowest_occupied_z) = lowest_occupied_z(occupancy, grid) else {
-        return;
+        FieldPropagation::from_method(config.field_method, config.field_rate)
     };
-    let lowest_center_z = grid.origin.z + (lowest_occupied_z as f64 + 0.5) * grid.voxel_size.z;
-    let field_offset = lowest_center_z - bounds.min.z;
-    if field_offset <= 0.0 || !field_offset.is_finite() {
-        return;
-    }
 
-    for distance in &mut field.distances {
-        if distance.is_finite() {
-            *distance += field_offset;
-        }
-    }
-    field.max_distance += field_offset;
-}
-
-fn lowest_occupied_z(occupancy: &[u8], grid: Grid) -> Option<usize> {
-    for z in 0..grid.dims[2] {
-        for y in 0..grid.dims[1] {
-            for x in 0..grid.dims[0] {
-                if occupancy[grid.index(x, y, z)] != 0 {
-                    return Some(z);
-                }
-            }
-        }
-    }
-    None
-}
-
-fn trapezoid_propagation(grid: Grid) -> Result<ExplicitKernelPropagation, String> {
-    let moves = trapezoid_kernel_moves(TrapezoidKernel {
-        voxel_size: grid.voxel_size,
-        r1: 2.0,
-        r2: 0.2,
-        half_height: 0.5,
-        z_offset: 0.5,
-        surface_cost: 1.0,
-        max_cost: 2.0,
-    })?;
-    ExplicitKernelPropagation::new(moves, KernelPathCheck::SweptOccupied)
-}
-
-#[derive(Clone, Copy)]
-struct TrapezoidKernel {
-    voxel_size: Vec3,
-    r1: f64,
-    r2: f64,
-    half_height: f64,
-    z_offset: f64,
-    surface_cost: f64,
-    max_cost: f64,
-}
-
-fn trapezoid_kernel_moves(kernel: TrapezoidKernel) -> Result<Vec<KernelMove>, String> {
-    let outer_margin = kernel.max_cost - kernel.surface_cost;
-    if outer_margin < 0.0 {
-        return Err("trapezoid max cost must be greater than or equal to surface cost".to_string());
-    }
-    let vertical_cost_scale = trapezoid_vertical_cost_scale(kernel)?;
-
-    let max_radius_mm = kernel.r1.max(kernel.r2) + outer_margin;
-    let min_z_mm = -kernel.z_offset - kernel.half_height - outer_margin;
-    let max_z_mm = -kernel.z_offset + kernel.half_height + outer_margin;
-    let radius_x = (max_radius_mm / kernel.voxel_size.x).ceil() as isize;
-    let radius_y = (max_radius_mm / kernel.voxel_size.y).ceil() as isize;
-    let radius_z = (min_z_mm.abs().max(max_z_mm.abs()) / kernel.voxel_size.z).ceil() as isize;
-    let mut moves = Vec::new();
-
-    for dz in -radius_z..=radius_z {
-        for dy in -radius_y..=radius_y {
-            for dx in -radius_x..=radius_x {
-                if dx == 0 && dy == 0 && dz == 0 {
-                    continue;
-                }
-
-                let radial_mm = ((dx as f64 * kernel.voxel_size.x).powi(2)
-                    + (dy as f64 * kernel.voxel_size.y).powi(2))
-                .sqrt();
-                let z_mm = dz as f64 * kernel.voxel_size.z;
-                let sdf = sd_trapezoid(
-                    [radial_mm, z_mm + kernel.z_offset],
-                    kernel.r1,
-                    kernel.r2,
-                    kernel.half_height,
-                );
-                let raw_cost = kernel.surface_cost + sdf;
-                if raw_cost > 0.0 && raw_cost <= kernel.max_cost {
-                    let mut cost = raw_cost / vertical_cost_scale;
-                    if dz > 0 {
-                        cost = cost.max(dz as f64 * kernel.voxel_size.z);
-                    }
-                    moves.push(KernelMove {
-                        offset: [dx, dy, dz],
-                        cost,
-                    });
-                }
-            }
-        }
-    }
-
-    Ok(moves)
-}
-
-fn trapezoid_vertical_cost_scale(kernel: TrapezoidKernel) -> Result<f64, String> {
-    let one_voxel_up_cost = kernel.surface_cost
-        + sd_trapezoid(
-            [0.0, kernel.voxel_size.z + kernel.z_offset],
-            kernel.r1,
-            kernel.r2,
-            kernel.half_height,
-        );
-    if one_voxel_up_cost <= 0.0 || !one_voxel_up_cost.is_finite() {
-        return Err("trapezoid vertical cost scale must be finite and positive".to_string());
-    }
-
-    Ok(one_voxel_up_cost / kernel.voxel_size.z)
-}
-
-fn sd_trapezoid(p: [f64; 2], r1: f64, r2: f64, half_height: f64) -> f64 {
-    let k1 = [r2, half_height];
-    let k2 = [r2 - r1, 2.0 * half_height];
-    let px = p[0].abs();
-    let py = p[1];
-
-    let ca = [
-        (px - if py < 0.0 { r1 } else { r2 }).max(0.0),
-        py.abs() - half_height,
-    ];
-    let k1_minus_p = [k1[0] - px, k1[1] - py];
-    let h = ((k1_minus_p[0] * k2[0] + k1_minus_p[1] * k2[1]) / dot2(k2)).clamp(0.0, 1.0);
-    let cb = [px - k1[0] + k2[0] * h, py - k1[1] + k2[1] * h];
-    let sign = if cb[0] < 0.0 && ca[1] < 0.0 {
-        -1.0
-    } else {
-        1.0
-    };
-    sign * dot2(ca).min(dot2(cb)).sqrt()
-}
-
-fn dot2(v: [f64; 2]) -> f64 {
-    v[0] * v[0] + v[1] * v[1]
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::fs;
-    use std::path::PathBuf;
-
-    #[test]
-    fn trapezoid_kernel_uses_millimeter_vertical_costs() {
-        let kernel = TrapezoidKernel {
-            voxel_size: Vec3 {
-                x: 0.4,
-                y: 0.4,
-                z: 0.4,
-            },
-            r1: 2.0,
-            r2: 0.2,
-            half_height: 0.5,
-            z_offset: 0.5,
-            surface_cost: 1.0,
-            max_cost: 2.0,
-        };
-        let moves = trapezoid_kernel_moves(kernel).unwrap();
-
-        let one_up = moves
-            .iter()
-            .find(|kernel_move| kernel_move.offset == [0, 0, 1])
-            .unwrap();
-        let two_up = moves
-            .iter()
-            .find(|kernel_move| kernel_move.offset == [0, 0, 2])
-            .unwrap();
-
-        assert!((one_up.cost - 0.4).abs() < 1.0e-9);
-        assert!((two_up.cost - 0.8).abs() < 1.0e-9);
-    }
-
-    #[test]
-    fn perimeter_offsets_use_bead_centerlines() {
-        let offsets = perimeter_offsets(3, 0.4);
-        assert!((offsets[0] - 1.0).abs() < 1.0e-12);
-        assert!((offsets[1] - 0.6).abs() < 1.0e-12);
-        assert!((offsets[2] - 0.2).abs() < 1.0e-12);
-    }
-
-    #[test]
-    fn end_to_end_gcode_regression_for_offset_box() {
-        let output_prefix = unique_temp_prefix("shockwave-gcode-regression");
-        let config = cli::Config {
-            input: PathBuf::from("offset-box.stl"),
-            settings_path: None,
-            output_prefix,
-            voxel_size: v(1.0, 1.0, 1.0),
-            requested_size: Some(v(16.0, 16.0, 12.0)),
-            padding_voxels: 2,
-            origin: None,
-            field_enabled: true,
-            field_method: FieldMethod::Anisotropic,
-            field_rate: v(1.0, 1.0, 1.0),
-            kernel_path: None,
-            max_unreached_below_mm: 20.0,
-            unreached_cone_angle_degrees: 0.0,
-            iso_spacing: 1.0,
-            export_ply: false,
-            gcode_enabled: true,
-            wall_count: 2,
-            extrusion_width_mm: 0.4,
-            filament_diameter_mm: 1.75,
-            infill_spacing_mm: Some(2.0),
-        };
-        let triangles = cube_triangles(v(10.0, 20.0, 0.0), v(18.0, 28.0, 5.0));
-        let (grid, occupancy, field) = voxelize(&config, &triangles).unwrap();
-        let outputs = write_outputs(&config, &triangles, &occupancy, &field, grid).unwrap();
-        let gcode_path = outputs.gcode.expect("gcode output path");
-        let gcode = fs::read_to_string(gcode_path).unwrap();
-
-        assert!(gcode.contains("M190 S60 ; set bed temperature and wait for it to be reached"));
-        assert!(gcode.contains("G28 ; home all axes"));
-        assert!(gcode.contains("M109 S215 ; Nozzle temperature"));
-        assert!(gcode.contains("G1 E20 F200"));
-        assert!(gcode.contains(";LAYER_CHANGE"));
-        assert!(gcode.contains("; layer field_value=1.000000"));
-        assert_order(&gcode, ";TYPE:Perimeter", ";TYPE:Infill");
-
-        let first_print_move = first_print_move(&gcode).expect("first print move");
-        assert!(
-            first_print_move.x > 9.0,
-            "X model coordinates should be preserved, got {first_print_move:?}"
-        );
-        assert!(
-            first_print_move.y > 19.0,
-            "Y model coordinates should be preserved, got {first_print_move:?}"
-        );
-        assert!(
-            (first_print_move.z - 1.0).abs() < 1.0e-6,
-            "first layer should align with the first exported isosurface, got {first_print_move:?}"
-        );
-    }
-
-    #[test]
-    fn model_floor_offset_preserves_model_xy() {
-        let offset = model_floor_coordinate_offset(Bounds {
-            min: Vec3 {
-                x: -10.0,
-                y: 2.0,
-                z: -3.5,
-            },
-            max: Vec3 {
-                x: 5.0,
-                y: 8.0,
-                z: 12.0,
-            },
-        });
-
-        assert_eq!(offset.x, 0.0);
-        assert_eq!(offset.y, 0.0);
-        assert_eq!(offset.z, 3.5);
-    }
-
-    #[test]
-    fn field_distances_are_aligned_to_model_floor() {
-        let grid = Grid {
-            origin: Vec3 {
-                x: -1.0,
-                y: -1.0,
-                z: -1.0,
-            },
-            dims: [1, 1, 3],
-            voxel_size: Vec3 {
-                x: 1.0,
-                y: 1.0,
-                z: 1.0,
-            },
-            actual_size: Vec3 {
-                x: 1.0,
-                y: 1.0,
-                z: 3.0,
-            },
-        };
-        let occupancy = vec![0, 1, 1];
-        let mut field = Field {
-            distances: vec![f64::INFINITY, 0.0, 1.0],
-            max_distance: 1.0,
-        };
-
-        align_field_to_model_floor(
-            &mut field,
-            &occupancy,
-            grid,
-            Bounds {
-                min: Vec3 {
-                    x: 0.0,
-                    y: 0.0,
-                    z: 0.0,
-                },
-                max: Vec3 {
-                    x: 1.0,
-                    y: 1.0,
-                    z: 2.0,
-                },
-            },
-        );
-
-        assert_eq!(field.distances[1], 0.5);
-        assert_eq!(field.distances[2], 1.5);
-        assert_eq!(field.max_distance, 1.5);
-    }
-
-    #[test]
-    fn local_layer_height_uses_field_gradient() {
-        let grid = Grid {
-            origin: Vec3 {
-                x: 0.0,
-                y: 0.0,
-                z: 0.0,
-            },
-            dims: [2, 2, 3],
-            voxel_size: Vec3 {
-                x: 1.0,
-                y: 1.0,
-                z: 1.0,
-            },
-            actual_size: Vec3 {
-                x: 2.0,
-                y: 2.0,
-                z: 3.0,
-            },
-        };
-        let field = Field {
-            distances: vec![0.0, 0.0, 0.0, 0.0, 2.0, 2.0, 2.0, 2.0, 4.0, 4.0, 4.0, 4.0],
-            max_distance: 4.0,
-        };
-
-        let height = local_layer_height(
-            &field,
-            grid,
-            Vec3 {
-                x: 0.5,
-                y: 0.5,
-                z: 1.5,
-            },
-            1.0,
-            2.0,
-        )
-        .unwrap();
-
-        assert!((height - 0.5).abs() < 1.0e-12);
-    }
-
-    #[test]
-    fn local_layer_height_errors_on_undefined_gradient() {
-        let grid = Grid {
-            origin: Vec3 {
-                x: 0.0,
-                y: 0.0,
-                z: 0.0,
-            },
-            dims: [1, 1, 1],
-            voxel_size: Vec3 {
-                x: 1.0,
-                y: 1.0,
-                z: 1.0,
-            },
-            actual_size: Vec3 {
-                x: 1.0,
-                y: 1.0,
-                z: 1.0,
-            },
-        };
-        let field = Field {
-            distances: vec![0.0],
-            max_distance: 0.0,
-        };
-
-        let error = local_layer_height(
-            &field,
-            grid,
-            Vec3 {
-                x: 0.5,
-                y: 0.5,
-                z: 0.5,
-            },
-            1.0,
-            0.0,
-        )
-        .unwrap_err();
-
-        assert!(error.contains("field gradient is"));
-    }
-
-    #[test]
-    fn local_layer_height_searches_neighboring_cells_for_surface_gradient() {
-        let grid = Grid {
-            origin: Vec3 {
-                x: 0.0,
-                y: 0.0,
-                z: 0.0,
-            },
-            dims: [3, 2, 2],
-            voxel_size: Vec3 {
-                x: 1.0,
-                y: 1.0,
-                z: 1.0,
-            },
-            actual_size: Vec3 {
-                x: 3.0,
-                y: 2.0,
-                z: 2.0,
-            },
-        };
-        let mut distances = vec![1.0; grid.voxel_count()];
-        for z in 0..grid.dims[2] {
-            for y in 0..grid.dims[1] {
-                distances[grid.index(2, y, z)] = 2.0;
-            }
-        }
-        let field = Field {
-            distances,
-            max_distance: 2.0,
-        };
-
-        let height = local_layer_height(
-            &field,
-            grid,
-            Vec3 {
-                x: 0.9,
-                y: 0.5,
-                z: 0.5,
-            },
-            1.0,
-            1.0,
-        )
-        .unwrap();
-
-        assert!((height - 1.0).abs() < 1.0e-12);
-    }
-
-    fn unique_temp_prefix(name: &str) -> PathBuf {
-        std::env::temp_dir().join(format!("{name}-{}", std::process::id()))
-    }
-
-    fn v(x: f64, y: f64, z: f64) -> Vec3 {
-        Vec3 { x, y, z }
-    }
-
-    fn tri(a: Vec3, b: Vec3, c: Vec3) -> Triangle {
-        Triangle {
-            vertices: [a, b, c],
-        }
-    }
-
-    fn cube_triangles(min: Vec3, max: Vec3) -> Vec<Triangle> {
-        vec![
-            tri(
-                v(min.x, min.y, min.z),
-                v(max.x, max.y, min.z),
-                v(max.x, min.y, min.z),
-            ),
-            tri(
-                v(min.x, min.y, min.z),
-                v(min.x, max.y, min.z),
-                v(max.x, max.y, min.z),
-            ),
-            tri(
-                v(min.x, min.y, max.z),
-                v(max.x, min.y, max.z),
-                v(max.x, max.y, max.z),
-            ),
-            tri(
-                v(min.x, min.y, max.z),
-                v(max.x, max.y, max.z),
-                v(min.x, max.y, max.z),
-            ),
-            tri(
-                v(min.x, min.y, min.z),
-                v(max.x, min.y, min.z),
-                v(max.x, min.y, max.z),
-            ),
-            tri(
-                v(min.x, min.y, min.z),
-                v(max.x, min.y, max.z),
-                v(min.x, min.y, max.z),
-            ),
-            tri(
-                v(min.x, max.y, min.z),
-                v(max.x, max.y, max.z),
-                v(max.x, max.y, min.z),
-            ),
-            tri(
-                v(min.x, max.y, min.z),
-                v(min.x, max.y, max.z),
-                v(max.x, max.y, max.z),
-            ),
-            tri(
-                v(min.x, min.y, min.z),
-                v(min.x, min.y, max.z),
-                v(min.x, max.y, max.z),
-            ),
-            tri(
-                v(min.x, min.y, min.z),
-                v(min.x, max.y, max.z),
-                v(min.x, max.y, min.z),
-            ),
-            tri(
-                v(max.x, min.y, min.z),
-                v(max.x, max.y, min.z),
-                v(max.x, max.y, max.z),
-            ),
-            tri(
-                v(max.x, min.y, min.z),
-                v(max.x, max.y, max.z),
-                v(max.x, min.y, max.z),
-            ),
-        ]
-    }
-
-    fn assert_order(text: &str, before: &str, after: &str) {
-        let before_index = text
-            .find(before)
-            .unwrap_or_else(|| panic!("missing {before}"));
-        let after_index = text
-            .find(after)
-            .unwrap_or_else(|| panic!("missing {after}"));
-        assert!(
-            before_index < after_index,
-            "expected {before} before {after}"
-        );
-    }
-
-    fn first_print_move(gcode: &str) -> Option<Vec3> {
-        gcode
-            .lines()
-            .find(|line| line.starts_with("G1 X"))
-            .and_then(parse_gcode_position)
-    }
-
-    fn parse_gcode_position(line: &str) -> Option<Vec3> {
-        let mut position = Vec3 {
-            x: f64::NAN,
-            y: f64::NAN,
-            z: f64::NAN,
-        };
-        for word in line.split_whitespace() {
-            let Some((axis, value)) = word.split_at_checked(1) else {
-                continue;
-            };
-            let Ok(value) = value.parse::<f64>() else {
-                continue;
-            };
-            match axis {
-                "X" => position.x = value,
-                "Y" => position.y = value,
-                "Z" => position.z = value,
-                _ => {}
-            }
-        }
-        position.x.is_finite().then_some(position)
-    }
-}
-
-fn propagate_and_expand(
-    config: &cli::Config,
-    occupancy: &[u8],
-    grid: Grid,
-    propagation: &impl PropagationMethod,
-) -> Result<Field, String> {
-    let propagation_start = Instant::now();
-    let mut progress = StderrProgress::new("propagate field");
-    let mut field = propagate_field_with_progress(
-        occupancy,
-        grid,
+    Ok(SliceSettings {
+        voxel_size: config.voxel_size,
+        requested_size: config.requested_size,
+        padding_voxels: config.padding_voxels,
+        origin: config.origin,
+        field_enabled: config.field_enabled,
         propagation,
-        PropagationConstraints {
-            max_unreached_below_mm: Some(config.max_unreached_below_mm),
-            unreached_cone_angle_degrees: (config.unreached_cone_angle_degrees > 0.0)
-                .then_some(config.unreached_cone_angle_degrees),
-            unreached_cone_max_height_mm: Some(config.max_unreached_below_mm),
-        },
-        &mut progress,
-    )?;
-    log_timing("propagate field", propagation_start.elapsed());
+        field_rate: config.field_rate,
+        max_unreached_below_mm: config.max_unreached_below_mm,
+        unreached_cone_angle_degrees: config.unreached_cone_angle_degrees,
+        iso_spacing: config.iso_spacing,
+        wall_count: config.wall_count,
+        extrusion_width_mm: config.extrusion_width_mm,
+        filament_diameter_mm: config.filament_diameter_mm,
+        infill_spacing_mm: config.infill_spacing_mm,
+    })
+}
 
-    let expansion_start = Instant::now();
-    expand_field(&mut field, grid, FIELD_EXTENSION_VOXELS, propagation);
-    log_timing("expand field", expansion_start.elapsed());
-    Ok(field)
+fn voxelize_with_timing(
+    settings: &SliceSettings,
+    triangles: &[Triangle],
+) -> Result<(Grid, Vec<u8>, Option<Field>), String> {
+    let start = Instant::now();
+    let mut progress = stderr_progress();
+    let result = voxelize(settings, triangles, &mut progress).map_err(|error| error.to_string())?;
+    log_timing("voxelize", start.elapsed());
+    Ok(result)
+}
+
+fn stderr_progress() -> impl FnMut(SliceProgress) {
+    let mut last_percent = None;
+    move |event| {
+        if event.phase_progress >= 1.0 {
+            eprintln!("{:?}: complete - {}", event.phase, event.message);
+            last_percent = None;
+            return;
+        }
+
+        let percent = (event.phase_progress * 100.0).floor() as i32;
+        if last_percent != Some(percent) && percent % 5 == 0 {
+            eprintln!("{:?}: {:>3}% - {}", event.phase, percent, event.message);
+            last_percent = Some(percent);
+        }
+    }
+}
+
+fn write_outputs(
+    config: &cli::Config,
+    settings: &SliceSettings,
+    triangles: &[Triangle],
+    occupancy: &[u8],
+    field: &Option<Field>,
+    grid: Grid,
+) -> Result<OutputPaths, String> {
+    let bounds = mesh_bounds(triangles);
+    let atlas = build_atlas(grid);
+    let occupied_count = occupancy.iter().filter(|value| **value != 0).count();
+
+    let volume_path = config.output_prefix.with_extension("occ");
+    let image_path = config.output_prefix.with_extension("bmp");
+    let mesh_path =
+        (field.is_some() && config.export_ply).then(|| config.output_prefix.with_extension("ply"));
+    let clipped_mesh_path = (field.is_some() && config.export_ply)
+        .then(|| suffixed_output_path(config, "clipped", "ply"));
+    let gcode_path = config
+        .gcode_enabled
+        .then(|| config.output_prefix.with_extension("gcode"));
+    let metadata_path = config.output_prefix.with_extension("json");
+
+    let occ_start = Instant::now();
+    fs::write(&volume_path, occupancy)
+        .map_err(|error| format!("failed to write {}: {error}", volume_path.display()))?;
+    log_timing("write occ", occ_start.elapsed());
+
+    let bmp_start = Instant::now();
+    write_occupancy_bmp(&image_path, occupancy, field.as_ref(), grid, atlas)
+        .map_err(|error| format!("failed to write {}: {error}", image_path.display()))?;
+    log_timing("write bmp", bmp_start.elapsed());
+
+    if let Some(field) = field
+        .as_ref()
+        .filter(|_| config.export_ply || config.gcode_enabled)
+    {
+        let mesh = extract_isosurfaces_with_timing(field, grid, settings.iso_spacing)?;
+
+        if let Some(mesh_path) = mesh_path.as_ref() {
+            let ply_start = Instant::now();
+            write_ply_binary(mesh_path, &mesh)
+                .map_err(|error| format!("failed to write {}: {error}", mesh_path.display()))?;
+            log_timing("write ply", ply_start.elapsed());
+        }
+
+        let clipped_mesh = clip_isosurfaces_with_timing(&mesh, triangles);
+
+        if let Some(clipped_mesh_path) = clipped_mesh_path.as_ref() {
+            let clipped_ply_start = Instant::now();
+            write_ply_binary(clipped_mesh_path, &clipped_mesh).map_err(|error| {
+                format!("failed to write {}: {error}", clipped_mesh_path.display())
+            })?;
+            log_timing("write clipped ply", clipped_ply_start.elapsed());
+        }
+
+        if let Some(gcode_path) = gcode_path.as_ref() {
+            write_gcode_with_timing(gcode_path, &clipped_mesh, settings, triangles, field, grid)?;
+        }
+    }
+
+    let metadata_start = Instant::now();
+    fs::write(
+        &metadata_path,
+        metadata_json(&MetadataDocument {
+            metadata: Metadata {
+                input: &config.input.display().to_string(),
+                voxel_size: config.voxel_size,
+                padding_voxels: config.padding_voxels,
+                field_enabled: config.field_enabled,
+                field_method: settings.field_method_name(),
+                kernel_path: config
+                    .kernel_path
+                    .as_ref()
+                    .map(|path| path.display().to_string())
+                    .as_deref(),
+                field_rate: config.field_rate,
+                max_unreached_below_mm: config.max_unreached_below_mm,
+                unreached_cone_angle_degrees: config.unreached_cone_angle_degrees,
+                field_extension_voxels: FIELD_EXTENSION_VOXELS,
+                iso_spacing: config.iso_spacing,
+            },
+            bounds,
+            grid,
+            atlas,
+            volume_path: &volume_path,
+            image_path: &image_path,
+            mesh_path: mesh_path.as_deref(),
+            clipped_mesh_path: clipped_mesh_path.as_deref(),
+            field: field.as_ref(),
+            occupied_count,
+            voxel_count: occupancy.len(),
+        }),
+    )
+    .map_err(|error| format!("failed to write {}: {error}", metadata_path.display()))?;
+    log_timing("write metadata", metadata_start.elapsed());
+
+    Ok(OutputPaths {
+        volume: volume_path,
+        image: image_path,
+        mesh: mesh_path,
+        clipped_mesh: clipped_mesh_path,
+        gcode: gcode_path,
+        metadata: metadata_path,
+    })
+}
+
+fn extract_isosurfaces_with_timing(
+    field: &Field,
+    grid: Grid,
+    iso_spacing: f64,
+) -> Result<IsosurfaceSet, String> {
+    let start = Instant::now();
+    let mesh = extract_regular_isosurfaces(field, grid, iso_spacing)?;
+    log_timing("extract isosurfaces", start.elapsed());
+    eprintln!(
+        "timing: isosurface set produced {} surfaces, {} vertices and {} triangles",
+        mesh.surfaces.len(),
+        mesh.vertex_count(),
+        mesh.triangle_count()
+    );
+    Ok(mesh)
+}
+
+fn clip_isosurfaces_with_timing(mesh: &IsosurfaceSet, triangles: &[Triangle]) -> IsosurfaceSet {
+    let start = Instant::now();
+    let clipped_mesh = clip_isosurfaces_to_solid(mesh, triangles);
+    log_timing("clip isosurfaces", start.elapsed());
+    eprintln!(
+        "timing: clipped isosurface set produced {} surfaces, {} vertices and {} triangles",
+        clipped_mesh.surfaces.len(),
+        clipped_mesh.vertex_count(),
+        clipped_mesh.triangle_count()
+    );
+    clipped_mesh
+}
+
+fn write_gcode_with_timing(
+    gcode_path: &Path,
+    clipped_mesh: &IsosurfaceSet,
+    settings: &SliceSettings,
+    triangles: &[Triangle],
+    field: &Field,
+    grid: Grid,
+) -> Result<(), String> {
+    let path_start = Instant::now();
+    let layers = toolpaths_from_isosurfaces(clipped_mesh, settings, field, grid)
+        .map_err(|error| error.to_string())?;
+    log_timing("generate perimeter paths", path_start.elapsed());
+    eprintln!(
+        "timing: generated {} toolpath layers with {} paths",
+        layers.len(),
+        layers.iter().map(LayerToolpaths::path_count).sum::<usize>()
+    );
+
+    let gcode_start = Instant::now();
+    let mut bytes = Vec::new();
+    write_gcode(&mut bytes, &layers, mesh_bounds(triangles), settings)
+        .map_err(|error| error.to_string())?;
+    fs::write(gcode_path, bytes)
+        .map_err(|error| format!("failed to write {}: {error}", gcode_path.display()))?;
+    log_timing("write gcode", gcode_start.elapsed());
+    Ok(())
 }
 
 fn load_kernel_propagation(path: &Path) -> Result<ExplicitKernelPropagation, String> {
@@ -784,482 +346,15 @@ fn parse_kernel_move((index, value): (usize, &Value)) -> Result<KernelMove, Stri
 }
 
 struct OutputPaths {
-    volume: std::path::PathBuf,
-    image: std::path::PathBuf,
-    mesh: Option<std::path::PathBuf>,
-    clipped_mesh: Option<std::path::PathBuf>,
-    gcode: Option<std::path::PathBuf>,
-    metadata: std::path::PathBuf,
+    volume: PathBuf,
+    image: PathBuf,
+    mesh: Option<PathBuf>,
+    clipped_mesh: Option<PathBuf>,
+    gcode: Option<PathBuf>,
+    metadata: PathBuf,
 }
 
-fn write_outputs(
-    config: &cli::Config,
-    triangles: &[Triangle],
-    occupancy: &[u8],
-    field: &Option<Field>,
-    grid: Grid,
-) -> Result<OutputPaths, String> {
-    let bounds = mesh_bounds(triangles);
-    let atlas = build_atlas(grid);
-    let occupied_count = occupancy.iter().filter(|value| **value != 0).count();
-
-    let volume_path = config.output_prefix.with_extension("occ");
-    let image_path = config.output_prefix.with_extension("bmp");
-    let mesh_path =
-        (field.is_some() && config.export_ply).then(|| config.output_prefix.with_extension("ply"));
-    let clipped_mesh_path = (field.is_some() && config.export_ply)
-        .then(|| suffixed_output_path(config, "clipped", "ply"));
-    let gcode_path = config
-        .gcode_enabled
-        .then(|| config.output_prefix.with_extension("gcode"));
-    let metadata_path = config.output_prefix.with_extension("json");
-
-    let occ_start = Instant::now();
-    fs::write(&volume_path, occupancy)
-        .map_err(|error| format!("failed to write {}: {error}", volume_path.display()))?;
-    log_timing("write occ", occ_start.elapsed());
-
-    let bmp_start = Instant::now();
-    write_occupancy_bmp(&image_path, occupancy, field.as_ref(), grid, atlas)
-        .map_err(|error| format!("failed to write {}: {error}", image_path.display()))?;
-    log_timing("write bmp", bmp_start.elapsed());
-
-    if let Some(field) = field
-        .as_ref()
-        .filter(|_| config.export_ply || config.gcode_enabled)
-    {
-        let extract_start = Instant::now();
-        let mesh = extract_regular_isosurfaces(field, grid, config.iso_spacing)?;
-        log_timing("extract isosurfaces", extract_start.elapsed());
-        eprintln!(
-            "timing: isosurface set produced {} surfaces, {} vertices and {} triangles",
-            mesh.surfaces.len(),
-            mesh.vertex_count(),
-            mesh.triangle_count()
-        );
-
-        if let Some(mesh_path) = mesh_path.as_ref() {
-            let ply_start = Instant::now();
-            write_ply_binary(mesh_path, &mesh)
-                .map_err(|error| format!("failed to write {}: {error}", mesh_path.display()))?;
-            log_timing("write ply", ply_start.elapsed());
-        }
-
-        if config.export_ply || config.gcode_enabled {
-            let clip_start = Instant::now();
-            let clipped_mesh = clip_isosurfaces_to_solid(&mesh, triangles);
-            log_timing("clip isosurfaces", clip_start.elapsed());
-            eprintln!(
-                "timing: clipped isosurface set produced {} surfaces, {} vertices and {} triangles",
-                clipped_mesh.surfaces.len(),
-                clipped_mesh.vertex_count(),
-                clipped_mesh.triangle_count()
-            );
-
-            if let Some(clipped_mesh_path) = clipped_mesh_path.as_ref() {
-                let clipped_ply_start = Instant::now();
-                write_ply_binary(clipped_mesh_path, &clipped_mesh).map_err(|error| {
-                    format!("failed to write {}: {error}", clipped_mesh_path.display())
-                })?;
-                log_timing("write clipped ply", clipped_ply_start.elapsed());
-            }
-
-            if let Some(gcode_path) = gcode_path.as_ref() {
-                let path_start = Instant::now();
-                let layers = toolpaths_from_isosurfaces(&clipped_mesh, config, field, grid)?;
-                log_timing("generate perimeter paths", path_start.elapsed());
-                eprintln!(
-                    "timing: generated {} toolpath layers with {} paths",
-                    layers.len(),
-                    layers.iter().map(LayerToolpaths::path_count).sum::<usize>()
-                );
-
-                let gcode_start = Instant::now();
-                let gcode = write_marlin_gcode(
-                    &layers,
-                    MarlinConfig {
-                        filament_diameter_mm: config.filament_diameter_mm,
-                        coordinate_offset: model_floor_coordinate_offset(bounds),
-                        ..Default::default()
-                    },
-                )?;
-                fs::write(gcode_path, gcode).map_err(|error| {
-                    format!("failed to write {}: {error}", gcode_path.display())
-                })?;
-                log_timing("write gcode", gcode_start.elapsed());
-            }
-        }
-    }
-
-    let metadata_start = Instant::now();
-    fs::write(
-        &metadata_path,
-        metadata_json(&MetadataDocument {
-            metadata: Metadata {
-                input: &config.input.display().to_string(),
-                voxel_size: config.voxel_size,
-                padding_voxels: config.padding_voxels,
-                field_enabled: config.field_enabled,
-                field_method: if config.kernel_path.is_some() {
-                    "explicit-kernel"
-                } else {
-                    config.field_method.name()
-                },
-                kernel_path: config
-                    .kernel_path
-                    .as_ref()
-                    .map(|path| path.display().to_string())
-                    .as_deref(),
-                field_rate: config.field_rate,
-                max_unreached_below_mm: config.max_unreached_below_mm,
-                unreached_cone_angle_degrees: config.unreached_cone_angle_degrees,
-                field_extension_voxels: FIELD_EXTENSION_VOXELS,
-                iso_spacing: config.iso_spacing,
-            },
-            bounds,
-            grid,
-            atlas,
-            volume_path: &volume_path,
-            image_path: &image_path,
-            mesh_path: mesh_path.as_deref(),
-            clipped_mesh_path: clipped_mesh_path.as_deref(),
-            field: field.as_ref(),
-            occupied_count,
-            voxel_count: occupancy.len(),
-        }),
-    )
-    .map_err(|error| format!("failed to write {}: {error}", metadata_path.display()))?;
-    log_timing("write metadata", metadata_start.elapsed());
-
-    Ok(OutputPaths {
-        volume: volume_path,
-        image: image_path,
-        mesh: mesh_path,
-        clipped_mesh: clipped_mesh_path,
-        gcode: gcode_path,
-        metadata: metadata_path,
-    })
-}
-
-fn toolpaths_from_isosurfaces(
-    surfaces: &IsosurfaceSet,
-    config: &cli::Config,
-    field: &Field,
-    grid: Grid,
-) -> Result<Vec<LayerToolpaths>, String> {
-    let offsets = perimeter_offsets(config.wall_count, config.extrusion_width_mm);
-    let options = ContourOptions {
-        extrusion_width_mm: config.extrusion_width_mm,
-        layer_height_mm: config.iso_spacing,
-        ..Default::default()
-    };
-
-    surfaces
-        .surfaces
-        .par_iter()
-        .filter(|surface| !surface.mesh.is_empty())
-        .map(|surface| {
-            let infill_angle = if surface.level % 2 == 0 {
-                -FRAC_PI_4
-            } else {
-                FRAC_PI_4
-            };
-            let mut layer = layer_toolpaths_from_boundary(
-                &surface.mesh,
-                surface.value,
-                &offsets,
-                config.infill_spacing_mm,
-                infill_angle,
-                options,
-            )?;
-            apply_local_layer_heights(&mut layer, field, grid, config.iso_spacing, surface.value)?;
-            Ok(layer)
-        })
-        .collect()
-}
-
-fn perimeter_offsets(wall_count: usize, extrusion_width_mm: f64) -> Vec<f64> {
-    (0..wall_count)
-        .rev()
-        .map(|index| (index as f64 + 0.5) * extrusion_width_mm)
-        .collect()
-}
-
-fn model_floor_coordinate_offset(bounds: Bounds) -> Vec3 {
-    Vec3 {
-        x: 0.0,
-        y: 0.0,
-        z: -bounds.min.z,
-    }
-}
-
-fn apply_local_layer_heights(
-    layer: &mut LayerToolpaths,
-    field: &Field,
-    grid: Grid,
-    iso_spacing: f64,
-    field_value: f64,
-) -> Result<(), String> {
-    for path in &mut layer.paths {
-        for point in &mut path.points {
-            point.layer_height_mm =
-                local_layer_height(field, grid, point.position, iso_spacing, field_value)?;
-        }
-    }
-    Ok(())
-}
-
-fn local_layer_height(
-    field: &Field,
-    grid: Grid,
-    position: Vec3,
-    iso_spacing: f64,
-    field_value: f64,
-) -> Result<f64, String> {
-    let Some(gradient) = field_gradient_near_position(field, grid, position, field_value) else {
-        return Err(format!(
-            "field gradient is undefined at path point ({:.6}, {:.6}, {:.6})",
-            position.x, position.y, position.z
-        ));
-    };
-    let gradient_length =
-        (gradient.x * gradient.x + gradient.y * gradient.y + gradient.z * gradient.z).sqrt();
-    if gradient_length <= 1.0e-9 || !gradient_length.is_finite() {
-        let diagnostic = field_sample_diagnostic(field, grid, position)
-            .map(|text| format!("; {text}"))
-            .unwrap_or_default();
-        return Err(format!(
-            "field gradient is invalid at path point ({:.6}, {:.6}, {:.6}): gradient=({:.6}, {:.6}, {:.6}){}",
-            position.x, position.y, position.z, gradient.x, gradient.y, gradient.z, diagnostic
-        ));
-    }
-
-    let height = iso_spacing / gradient_length;
-    if height.is_finite() && height > 0.0 {
-        Ok(height)
-    } else {
-        Err(format!(
-            "local layer height is invalid at path point ({:.6}, {:.6}, {:.6}): iso_spacing={:.6}, gradient_length={:.6}",
-            position.x, position.y, position.z, iso_spacing, gradient_length
-        ))
-    }
-}
-
-fn field_sample_diagnostic(field: &Field, grid: Grid, position: Vec3) -> Option<String> {
-    if field.distances.len() != grid.voxel_count() || grid.dims.iter().any(|dim| *dim < 2) {
-        return None;
-    }
-    let (x, u) = cell_axis(position.x, grid.origin.x, grid.voxel_size.x, grid.dims[0]);
-    let (y, v) = cell_axis(position.y, grid.origin.y, grid.voxel_size.y, grid.dims[1]);
-    let (z, w) = cell_axis(position.z, grid.origin.z, grid.voxel_size.z, grid.dims[2]);
-    let values = cell_values(field, grid, x, y, z);
-    Some(format!(
-        "cell=({x},{y},{z}) local=({u:.6},{v:.6},{w:.6}) values={values:?}"
-    ))
-}
-
-fn field_gradient_near_position(
-    field: &Field,
-    grid: Grid,
-    position: Vec3,
-    target_value: f64,
-) -> Option<Vec3> {
-    if field.distances.len() != grid.voxel_count() {
-        return None;
-    }
-    if grid.dims.iter().any(|dim| *dim < 2) {
-        return None;
-    }
-    let (x, u) = cell_axis(position.x, grid.origin.x, grid.voxel_size.x, grid.dims[0]);
-    let (y, v) = cell_axis(position.y, grid.origin.y, grid.voxel_size.y, grid.dims[1]);
-    let (z, w) = cell_axis(position.z, grid.origin.z, grid.voxel_size.z, grid.dims[2]);
-    if let Some(gradient) = field_gradient_in_cell(field, grid, x, y, z, [u, v, w])
-        .filter(|gradient| gradient_length(*gradient) > 1.0e-9)
-    {
-        return Some(gradient);
-    }
-
-    let mut best = None;
-    for candidate_z in z.saturating_sub(1)..=(z + 1).min(grid.dims[2] - 2) {
-        for candidate_y in y.saturating_sub(1)..=(y + 1).min(grid.dims[1] - 2) {
-            for candidate_x in x.saturating_sub(1)..=(x + 1).min(grid.dims[0] - 2) {
-                let local =
-                    local_position_in_cell(position, grid, candidate_x, candidate_y, candidate_z);
-                let Some((value, gradient)) = field_value_and_gradient_in_cell(
-                    field,
-                    grid,
-                    candidate_x,
-                    candidate_y,
-                    candidate_z,
-                    local,
-                ) else {
-                    continue;
-                };
-                let length = gradient_length(gradient);
-                if length <= 1.0e-9 || !length.is_finite() {
-                    continue;
-                }
-                let clamped_position =
-                    position_from_cell_local(grid, candidate_x, candidate_y, candidate_z, local);
-                let distance_to_cell = squared_distance(position, clamped_position);
-                let value_error = (value - target_value).abs();
-                let score = value_error
-                    + distance_to_cell.sqrt()
-                        / grid
-                            .voxel_size
-                            .x
-                            .max(grid.voxel_size.y)
-                            .max(grid.voxel_size.z);
-                match best {
-                    Some((best_score, _)) if score >= best_score => {}
-                    _ => best = Some((score, gradient)),
-                }
-            }
-        }
-    }
-
-    best.map(|(_, gradient)| gradient)
-}
-
-fn field_gradient_in_cell(
-    field: &Field,
-    grid: Grid,
-    x: usize,
-    y: usize,
-    z: usize,
-    local: [f64; 3],
-) -> Option<Vec3> {
-    field_value_and_gradient_in_cell(field, grid, x, y, z, local).map(|(_, gradient)| gradient)
-}
-
-fn field_value_and_gradient_in_cell(
-    field: &Field,
-    grid: Grid,
-    x: usize,
-    y: usize,
-    z: usize,
-    local: [f64; 3],
-) -> Option<(f64, Vec3)> {
-    let values = cell_values(field, grid, x, y, z);
-    if values.iter().any(|value| !value.is_finite()) {
-        return None;
-    }
-    let value = trilinear_value(values, local);
-    let gradient = trilinear_gradient(values, local);
-    let gradient = Vec3 {
-        x: gradient[0] / grid.voxel_size.x,
-        y: gradient[1] / grid.voxel_size.y,
-        z: gradient[2] / grid.voxel_size.z,
-    };
-    Some((value, gradient))
-}
-
-fn local_position_in_cell(position: Vec3, grid: Grid, x: usize, y: usize, z: usize) -> [f64; 3] {
-    let base = position_from_cell_local(grid, x, y, z, [0.0, 0.0, 0.0]);
-    [
-        ((position.x - base.x) / grid.voxel_size.x).clamp(0.0, 1.0),
-        ((position.y - base.y) / grid.voxel_size.y).clamp(0.0, 1.0),
-        ((position.z - base.z) / grid.voxel_size.z).clamp(0.0, 1.0),
-    ]
-}
-
-fn position_from_cell_local(grid: Grid, x: usize, y: usize, z: usize, local: [f64; 3]) -> Vec3 {
-    Vec3 {
-        x: grid.origin.x + (x as f64 + local[0] + 0.5) * grid.voxel_size.x,
-        y: grid.origin.y + (y as f64 + local[1] + 0.5) * grid.voxel_size.y,
-        z: grid.origin.z + (z as f64 + local[2] + 0.5) * grid.voxel_size.z,
-    }
-}
-
-fn squared_distance(a: Vec3, b: Vec3) -> f64 {
-    let dx = b.x - a.x;
-    let dy = b.y - a.y;
-    let dz = b.z - a.z;
-    dx * dx + dy * dy + dz * dz
-}
-
-fn gradient_length(gradient: Vec3) -> f64 {
-    (gradient.x * gradient.x + gradient.y * gradient.y + gradient.z * gradient.z).sqrt()
-}
-
-fn cell_axis(position: f64, origin: f64, voxel_size: f64, dim: usize) -> (usize, f64) {
-    let coordinate = (position - origin) / voxel_size - 0.5;
-    let cell = coordinate.floor().clamp(0.0, dim.saturating_sub(2) as f64) as usize;
-    let local = (coordinate - cell as f64).clamp(0.0, 1.0);
-    (cell, local)
-}
-
-fn cell_values(field: &Field, grid: Grid, x: usize, y: usize, z: usize) -> [f64; 8] {
-    [
-        field.distances[grid.index(x, y, z)],
-        field.distances[grid.index(x + 1, y, z)],
-        field.distances[grid.index(x, y + 1, z)],
-        field.distances[grid.index(x + 1, y + 1, z)],
-        field.distances[grid.index(x, y, z + 1)],
-        field.distances[grid.index(x + 1, y, z + 1)],
-        field.distances[grid.index(x, y + 1, z + 1)],
-        field.distances[grid.index(x + 1, y + 1, z + 1)],
-    ]
-}
-
-fn trilinear_value(values: [f64; 8], u: [f64; 3]) -> f64 {
-    let [x, y, z] = u;
-    let c00 = values[0] * (1.0 - x) + values[1] * x;
-    let c10 = values[2] * (1.0 - x) + values[3] * x;
-    let c01 = values[4] * (1.0 - x) + values[5] * x;
-    let c11 = values[6] * (1.0 - x) + values[7] * x;
-    let c0 = c00 * (1.0 - y) + c10 * y;
-    let c1 = c01 * (1.0 - y) + c11 * y;
-    c0 * (1.0 - z) + c1 * z
-}
-
-fn trilinear_gradient(values: [f64; 8], u: [f64; 3]) -> [f64; 3] {
-    let [x, y, z] = u;
-
-    let dx00 = values[1] - values[0];
-    let dx10 = values[3] - values[2];
-    let dx01 = values[5] - values[4];
-    let dx11 = values[7] - values[6];
-    let dx0 = dx00 * (1.0 - y) + dx10 * y;
-    let dx1 = dx01 * (1.0 - y) + dx11 * y;
-
-    let dy00 = values[2] - values[0];
-    let dy10 = values[3] - values[1];
-    let dy01 = values[6] - values[4];
-    let dy11 = values[7] - values[5];
-    let dy0 = dy00 * (1.0 - x) + dy10 * x;
-    let dy1 = dy01 * (1.0 - x) + dy11 * x;
-
-    let dz00 = values[4] - values[0];
-    let dz10 = values[5] - values[1];
-    let dz01 = values[6] - values[2];
-    let dz11 = values[7] - values[3];
-    let dz0 = dz00 * (1.0 - x) + dz10 * x;
-    let dz1 = dz01 * (1.0 - x) + dz11 * x;
-
-    [
-        dx0 * (1.0 - z) + dx1 * z,
-        dy0 * (1.0 - z) + dy1 * z,
-        dz0 * (1.0 - y) + dz1 * y,
-    ]
-}
-
-fn clip_isosurfaces_to_solid(surfaces: &IsosurfaceSet, triangles: &[Triangle]) -> IsosurfaceSet {
-    let solid = TriangleSolid::new(triangles.to_vec());
-    IsosurfaceSet {
-        surfaces: surfaces
-            .surfaces
-            .par_iter()
-            .map(|surface| Isosurface {
-                level: surface.level,
-                value: surface.value,
-                mesh: clip_mesh_to_solid(&surface.mesh, &solid),
-            })
-            .collect(),
-    }
-}
-
-fn suffixed_output_path(config: &cli::Config, suffix: &str, extension: &str) -> std::path::PathBuf {
+fn suffixed_output_path(config: &cli::Config, suffix: &str, extension: &str) -> PathBuf {
     let mut path = config.output_prefix.clone();
     let stem = path
         .file_name()
