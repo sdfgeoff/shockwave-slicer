@@ -271,6 +271,8 @@ fn dot2(v: [f64; 2]) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+    use std::path::PathBuf;
 
     #[test]
     fn trapezoid_kernel_uses_millimeter_vertical_costs() {
@@ -308,6 +310,59 @@ mod tests {
         assert!((offsets[0] - 1.0).abs() < 1.0e-12);
         assert!((offsets[1] - 0.6).abs() < 1.0e-12);
         assert!((offsets[2] - 0.2).abs() < 1.0e-12);
+    }
+
+    #[test]
+    fn end_to_end_gcode_regression_for_offset_box() {
+        let output_prefix = unique_temp_prefix("shockwave-gcode-regression");
+        let config = cli::Config {
+            input: PathBuf::from("offset-box.stl"),
+            output_prefix,
+            voxel_size: v(1.0, 1.0, 1.0),
+            requested_size: Some(v(16.0, 16.0, 12.0)),
+            padding_voxels: 2,
+            origin: None,
+            field_enabled: true,
+            field_method: FieldMethod::Anisotropic,
+            field_rate: v(1.0, 1.0, 1.0),
+            kernel_path: None,
+            max_unreached_below_mm: 20.0,
+            unreached_cone_angle_degrees: 0.0,
+            iso_spacing: 1.0,
+            export_ply: false,
+            gcode_enabled: true,
+            wall_count: 2,
+            extrusion_width_mm: 0.4,
+            filament_diameter_mm: 1.75,
+            infill_spacing_mm: Some(2.0),
+        };
+        let triangles = cube_triangles(v(10.0, 20.0, 0.0), v(18.0, 28.0, 5.0));
+        let (grid, occupancy, field) = voxelize(&config, &triangles).unwrap();
+        let outputs = write_outputs(&config, &triangles, &occupancy, &field, grid).unwrap();
+        let gcode_path = outputs.gcode.expect("gcode output path");
+        let gcode = fs::read_to_string(gcode_path).unwrap();
+
+        assert!(gcode.contains("M190 S60 ; set bed temperature and wait for it to be reached"));
+        assert!(gcode.contains("G28 ; home all axes"));
+        assert!(gcode.contains("M109 S215 ; Nozzle temperature"));
+        assert!(gcode.contains("G1 E20 F200"));
+        assert!(gcode.contains(";LAYER_CHANGE"));
+        assert!(gcode.contains("; layer field_value=1.000000"));
+        assert_order(&gcode, ";TYPE:Perimeter", ";TYPE:Infill");
+
+        let first_print_move = first_print_move(&gcode).expect("first print move");
+        assert!(
+            first_print_move.x > 9.0,
+            "X model coordinates should be preserved, got {first_print_move:?}"
+        );
+        assert!(
+            first_print_move.y > 19.0,
+            "Y model coordinates should be preserved, got {first_print_move:?}"
+        );
+        assert!(
+            (first_print_move.z - 1.0).abs() < 1.0e-6,
+            "first layer should align with the first exported isosurface, got {first_print_move:?}"
+        );
     }
 
     #[test]
@@ -506,6 +561,128 @@ mod tests {
         .unwrap();
 
         assert!((height - 1.0).abs() < 1.0e-12);
+    }
+
+    fn unique_temp_prefix(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("{name}-{}", std::process::id()))
+    }
+
+    fn v(x: f64, y: f64, z: f64) -> Vec3 {
+        Vec3 { x, y, z }
+    }
+
+    fn tri(a: Vec3, b: Vec3, c: Vec3) -> Triangle {
+        Triangle {
+            vertices: [a, b, c],
+        }
+    }
+
+    fn cube_triangles(min: Vec3, max: Vec3) -> Vec<Triangle> {
+        vec![
+            tri(
+                v(min.x, min.y, min.z),
+                v(max.x, max.y, min.z),
+                v(max.x, min.y, min.z),
+            ),
+            tri(
+                v(min.x, min.y, min.z),
+                v(min.x, max.y, min.z),
+                v(max.x, max.y, min.z),
+            ),
+            tri(
+                v(min.x, min.y, max.z),
+                v(max.x, min.y, max.z),
+                v(max.x, max.y, max.z),
+            ),
+            tri(
+                v(min.x, min.y, max.z),
+                v(max.x, max.y, max.z),
+                v(min.x, max.y, max.z),
+            ),
+            tri(
+                v(min.x, min.y, min.z),
+                v(max.x, min.y, min.z),
+                v(max.x, min.y, max.z),
+            ),
+            tri(
+                v(min.x, min.y, min.z),
+                v(max.x, min.y, max.z),
+                v(min.x, min.y, max.z),
+            ),
+            tri(
+                v(min.x, max.y, min.z),
+                v(max.x, max.y, max.z),
+                v(max.x, max.y, min.z),
+            ),
+            tri(
+                v(min.x, max.y, min.z),
+                v(min.x, max.y, max.z),
+                v(max.x, max.y, max.z),
+            ),
+            tri(
+                v(min.x, min.y, min.z),
+                v(min.x, min.y, max.z),
+                v(min.x, max.y, max.z),
+            ),
+            tri(
+                v(min.x, min.y, min.z),
+                v(min.x, max.y, max.z),
+                v(min.x, max.y, min.z),
+            ),
+            tri(
+                v(max.x, min.y, min.z),
+                v(max.x, max.y, min.z),
+                v(max.x, max.y, max.z),
+            ),
+            tri(
+                v(max.x, min.y, min.z),
+                v(max.x, max.y, max.z),
+                v(max.x, min.y, max.z),
+            ),
+        ]
+    }
+
+    fn assert_order(text: &str, before: &str, after: &str) {
+        let before_index = text
+            .find(before)
+            .unwrap_or_else(|| panic!("missing {before}"));
+        let after_index = text
+            .find(after)
+            .unwrap_or_else(|| panic!("missing {after}"));
+        assert!(
+            before_index < after_index,
+            "expected {before} before {after}"
+        );
+    }
+
+    fn first_print_move(gcode: &str) -> Option<Vec3> {
+        gcode
+            .lines()
+            .find(|line| line.starts_with("G1 X"))
+            .and_then(parse_gcode_position)
+    }
+
+    fn parse_gcode_position(line: &str) -> Option<Vec3> {
+        let mut position = Vec3 {
+            x: f64::NAN,
+            y: f64::NAN,
+            z: f64::NAN,
+        };
+        for word in line.split_whitespace() {
+            let Some((axis, value)) = word.split_at_checked(1) else {
+                continue;
+            };
+            let Ok(value) = value.parse::<f64>() else {
+                continue;
+            };
+            match axis {
+                "X" => position.x = value,
+                "Y" => position.y = value,
+                "Z" => position.z = value,
+                _ => {}
+            }
+        }
+        position.x.is_finite().then_some(position)
     }
 }
 
