@@ -122,6 +122,7 @@ fn temporary_path(path: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use shockwave_config::{Dimensions3, SlicerSettings};
+    use shockwave_slicer::{CancellationToken, SlicePhase};
 
     use super::*;
 
@@ -188,13 +189,61 @@ mod tests {
         };
         let mut progress = |_| {};
         let mut timing = ignore_timing;
-        let output = run_slice_job(&request, &test_config(), &mut progress, &mut timing).unwrap();
+        let output = run_slice_job(
+            &request,
+            &test_config(),
+            &mut progress,
+            &mut timing,
+            &CancellationToken::default(),
+        )
+        .unwrap();
 
         assert_eq!(output.triangle_count, 12);
         assert!(output.occupied_count > 0);
         assert!(output.paths.volume.exists());
         assert!(output.paths.image.exists());
         assert!(output.paths.metadata.exists());
+
+        let _ = fs::remove_file(input);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn slice_job_can_be_cancelled_from_progress_callback() {
+        let root = unique_temp_path("slice-job-cancel");
+        let input = root.with_extension("stl");
+        let output_prefix = root.join("out").join("cube");
+        fs::write(&input, cube_ascii_stl()).unwrap();
+        fs::create_dir_all(output_prefix.parent().unwrap()).unwrap();
+
+        let request = SliceJobRequest {
+            input: input.clone(),
+            output_prefix,
+            debug_output: SliceDebugOutput {
+                export_ply: false,
+                gcode: false,
+            },
+            kernel_path: None,
+        };
+        let cancellation = CancellationToken::default();
+        let mut progress = |event: shockwave_slicer::SliceProgress| {
+            if event.phase == SlicePhase::LoadModel && event.phase_progress >= 1.0 {
+                cancellation.cancel();
+            }
+        };
+        let mut timing = ignore_timing;
+
+        let error = run_slice_job(
+            &request,
+            &test_config(),
+            &mut progress,
+            &mut timing,
+            &cancellation,
+        )
+        .unwrap_err();
+
+        assert_eq!(error, "cancelled");
+        assert!(!request.output_prefix.with_extension("occ").exists());
 
         let _ = fs::remove_file(input);
         let _ = fs::remove_dir_all(root);

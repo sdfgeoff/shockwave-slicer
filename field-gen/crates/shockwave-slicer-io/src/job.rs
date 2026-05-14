@@ -11,8 +11,8 @@ use shockwave_output::{
 };
 use shockwave_path::LayerToolpaths;
 use shockwave_slicer::{
-    FIELD_EXTENSION_VOXELS, SliceProgress, SliceSettings, clip_isosurfaces_to_solid,
-    toolpaths_from_isosurfaces, voxelize,
+    CancellationToken, FIELD_EXTENSION_VOXELS, SlicePhase, SliceProgress, SliceSettings,
+    clip_isosurfaces_to_solid, toolpaths_from_isosurfaces, voxelize,
 };
 use shockwave_voxel::field::Field;
 
@@ -47,11 +47,18 @@ pub fn run_slice_job(
     settings: &SlicerSettings,
     progress: &mut impl FnMut(SliceProgress),
     timing: &mut impl FnMut(&str, Duration),
+    cancellation: &CancellationToken,
 ) -> Result<SliceJobOutput, String> {
+    check_cancelled(cancellation)?;
+    progress_event(progress, SlicePhase::LoadModel, 0.0, "loading model");
     let load_start = Instant::now();
     let triangles = load_stl_model(&request.input)?;
     timing("load stl", load_start.elapsed());
+    progress_event(progress, SlicePhase::LoadModel, 1.0, "loaded model");
+    check_cancelled(cancellation)?;
+
     let runtime_settings = runtime_slice_settings(settings, timing)?;
+    check_cancelled(cancellation)?;
     let request = SliceJobRequest {
         input: request.input.clone(),
         output_prefix: request.output_prefix.clone(),
@@ -61,7 +68,14 @@ pub fn run_slice_job(
         },
         kernel_path: settings.field.kernel_path.clone(),
     };
-    run_slice_debug_outputs(&request, &runtime_settings, &triangles, progress, timing)
+    run_slice_debug_outputs(
+        &request,
+        &runtime_settings,
+        &triangles,
+        progress,
+        timing,
+        cancellation,
+    )
 }
 
 pub fn run_slice_debug_outputs(
@@ -70,14 +84,25 @@ pub fn run_slice_debug_outputs(
     triangles: &[Triangle],
     progress: &mut impl FnMut(SliceProgress),
     timing: &mut impl FnMut(&str, Duration),
+    cancellation: &CancellationToken,
 ) -> Result<SliceJobOutput, String> {
+    check_cancelled(cancellation)?;
     let voxelize_start = Instant::now();
     let (grid, occupancy, field) =
         voxelize(settings, triangles, progress).map_err(|error| error.to_string())?;
     timing("voxelize", voxelize_start.elapsed());
+    check_cancelled(cancellation)?;
 
     let paths = write_outputs(
-        request, settings, triangles, &occupancy, &field, grid, timing,
+        request,
+        settings,
+        triangles,
+        &occupancy,
+        &field,
+        grid,
+        progress,
+        timing,
+        cancellation,
     )?;
     let occupied_count = occupancy.iter().filter(|value| **value != 0).count();
 
@@ -97,7 +122,9 @@ fn write_outputs(
     occupancy: &[u8],
     field: &Option<Field>,
     grid: Grid,
+    progress: &mut impl FnMut(SliceProgress),
     timing: &mut impl FnMut(&str, Duration),
+    cancellation: &CancellationToken,
 ) -> Result<SliceOutputPaths, String> {
     let bounds = mesh_bounds(triangles);
     let atlas = build_atlas(grid);
@@ -114,26 +141,52 @@ fn write_outputs(
     fs::write(&paths.volume, occupancy)
         .map_err(|error| format!("failed to write {}: {error}", paths.volume.display()))?;
     timing("write occ", occ_start.elapsed());
+    check_cancelled(cancellation)?;
 
     let bmp_start = Instant::now();
     write_occupancy_bmp(&paths.image, occupancy, field.as_ref(), grid, atlas)
         .map_err(|error| format!("failed to write {}: {error}", paths.image.display()))?;
     timing("write bmp", bmp_start.elapsed());
+    check_cancelled(cancellation)?;
 
     if let Some(field) = field
         .as_ref()
         .filter(|_| request.debug_output.export_ply || request.debug_output.gcode)
     {
+        progress_event(
+            progress,
+            SlicePhase::ExtractLayers,
+            0.0,
+            "extracting isosurfaces",
+        );
+        check_cancelled(cancellation)?;
         let mesh = extract_isosurfaces_with_timing(field, grid, settings.iso_spacing, timing)?;
+        progress_event(
+            progress,
+            SlicePhase::ExtractLayers,
+            1.0,
+            "extracted isosurfaces",
+        );
+        check_cancelled(cancellation)?;
 
         if let Some(mesh_path) = paths.mesh.as_ref() {
             let ply_start = Instant::now();
             write_ply_binary(mesh_path, &mesh)
                 .map_err(|error| format!("failed to write {}: {error}", mesh_path.display()))?;
             timing("write ply", ply_start.elapsed());
+            check_cancelled(cancellation)?;
         }
 
+        progress_event(
+            progress,
+            SlicePhase::ClipLayers,
+            0.0,
+            "clipping isosurfaces",
+        );
+        check_cancelled(cancellation)?;
         let clipped_mesh = clip_isosurfaces_with_timing(&mesh, triangles, timing);
+        progress_event(progress, SlicePhase::ClipLayers, 1.0, "clipped isosurfaces");
+        check_cancelled(cancellation)?;
 
         if let Some(clipped_mesh_path) = paths.clipped_mesh.as_ref() {
             let clipped_ply_start = Instant::now();
@@ -141,18 +194,23 @@ fn write_outputs(
                 format!("failed to write {}: {error}", clipped_mesh_path.display())
             })?;
             timing("write clipped ply", clipped_ply_start.elapsed());
+            check_cancelled(cancellation)?;
         }
 
         if let Some(gcode_path) = paths.gcode.as_ref() {
-            write_gcode_with_timing(
-                gcode_path,
-                &clipped_mesh,
-                settings,
-                triangles,
-                field,
-                grid,
-                timing,
-            )?;
+            progress_event(progress, SlicePhase::GeneratePaths, 0.0, "generating paths");
+            check_cancelled(cancellation)?;
+            let path_start = Instant::now();
+            let layers = toolpaths_from_isosurfaces(&clipped_mesh, settings, field, grid)
+                .map_err(|error| error.to_string())?;
+            timing("generate perimeter paths", path_start.elapsed());
+            progress_event(progress, SlicePhase::GeneratePaths, 1.0, "generated paths");
+            check_cancelled(cancellation)?;
+
+            progress_event(progress, SlicePhase::WriteGcode, 0.0, "writing gcode");
+            write_gcode_with_timing(gcode_path, &layers, settings, triangles, timing)?;
+            progress_event(progress, SlicePhase::WriteGcode, 1.0, "wrote gcode");
+            check_cancelled(cancellation)?;
         }
     }
 
@@ -232,17 +290,11 @@ fn clip_isosurfaces_with_timing(
 
 fn write_gcode_with_timing(
     gcode_path: &Path,
-    clipped_mesh: &IsosurfaceSet,
+    layers: &[LayerToolpaths],
     settings: &SliceSettings,
     triangles: &[Triangle],
-    field: &Field,
-    grid: Grid,
     timing: &mut impl FnMut(&str, Duration),
 ) -> Result<(), String> {
-    let path_start = Instant::now();
-    let layers = toolpaths_from_isosurfaces(clipped_mesh, settings, field, grid)
-        .map_err(|error| error.to_string())?;
-    timing("generate perimeter paths", path_start.elapsed());
     eprintln!(
         "timing: generated {} toolpath layers with {} paths",
         layers.len(),
@@ -253,4 +305,25 @@ fn write_gcode_with_timing(
     write_gcode_atomically(gcode_path, &layers, mesh_bounds(triangles), settings)?;
     timing("write gcode", gcode_start.elapsed());
     Ok(())
+}
+
+fn check_cancelled(cancellation: &CancellationToken) -> Result<(), String> {
+    if cancellation.is_cancelled() {
+        Err("cancelled".to_string())
+    } else {
+        Ok(())
+    }
+}
+
+fn progress_event(
+    progress: &mut impl FnMut(SliceProgress),
+    phase: SlicePhase,
+    phase_progress: f32,
+    message: &str,
+) {
+    progress(SliceProgress {
+        phase,
+        phase_progress,
+        message: message.to_string(),
+    });
 }

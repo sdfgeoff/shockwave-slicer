@@ -4,7 +4,7 @@ use std::env;
 use std::time::{Duration, Instant};
 
 use cli::parse_args;
-use shockwave_slicer::SliceProgress;
+use shockwave_slicer::{CancellationToken, SliceProgress};
 use shockwave_slicer_io::{SliceDebugOutput, SliceJobOutput, SliceJobRequest, run_slice_job};
 
 fn main() {
@@ -28,7 +28,14 @@ fn run() -> Result<(), String> {
     };
     let mut progress = stderr_progress();
     let mut timing = log_timing;
-    let output = run_slice_job(&request, &config.settings, &mut progress, &mut timing)?;
+    let cancellation = CancellationToken::default();
+    let output = run_slice_job(
+        &request,
+        &config.settings,
+        &mut progress,
+        &mut timing,
+        &cancellation,
+    )?;
     print_summary(&output);
     log_timing("total", total_start.elapsed());
     Ok(())
