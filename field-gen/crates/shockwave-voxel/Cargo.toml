@@ -5,4 +5,4 @@ edition.workspace = true
 
 [dependencies]
 rayon = "1.10"
-shockwave-core = { path = "../shockwave-core" }
+shockwave-math = { path = "../shockwave-math" }

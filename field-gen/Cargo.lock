@@ -40,9 +40,9 @@ dependencies = [
  "rayon",
  "serde_json",
  "shockwave-clip",
- "shockwave-core",
  "shockwave-gcode",
  "shockwave-iso",
+ "shockwave-math",
  "shockwave-output",
  "shockwave-path",
  "shockwave-stl",
@@ -145,19 +145,15 @@ dependencies = [
 name = "shockwave-clip"
 version = "0.1.0"
 dependencies = [
- "shockwave-core",
+ "shockwave-math",
  "shockwave-mesh",
 ]
-
-[[package]]
-name = "shockwave-core"
-version = "0.1.0"
 
 [[package]]
 name = "shockwave-gcode"
 version = "0.1.0"
 dependencies = [
- "shockwave-core",
+ "shockwave-math",
  "shockwave-path",
 ]
 
@@ -165,7 +161,7 @@ dependencies = [
 name = "shockwave-geodesic"
 version = "0.1.0"
 dependencies = [
- "shockwave-core",
+ "shockwave-math",
  "shockwave-mesh",
 ]
 
@@ -173,24 +169,28 @@ dependencies = [
 name = "shockwave-iso"
 version = "0.1.0"
 dependencies = [
- "shockwave-core",
+ "shockwave-math",
  "shockwave-mesh",
  "shockwave-voxel",
 ]
 
 [[package]]
+name = "shockwave-math"
+version = "0.1.0"
+
+[[package]]
 name = "shockwave-mesh"
 version = "0.1.0"
 dependencies = [
- "shockwave-core",
+ "shockwave-math",
 ]
 
 [[package]]
 name = "shockwave-output"
 version = "0.1.0"
 dependencies = [
- "shockwave-core",
  "shockwave-iso",
+ "shockwave-math",
  "shockwave-voxel",
 ]
 
@@ -198,8 +198,8 @@ dependencies = [
 name = "shockwave-path"
 version = "0.1.0"
 dependencies = [
- "shockwave-core",
  "shockwave-geodesic",
+ "shockwave-math",
  "shockwave-mesh",
 ]
 
@@ -207,7 +207,7 @@ dependencies = [
 name = "shockwave-stl"
 version = "0.1.0"
 dependencies = [
- "shockwave-core",
+ "shockwave-math",
 ]
 
 [[package]]
@@ -215,7 +215,7 @@ name = "shockwave-voxel"
 version = "0.1.0"
 dependencies = [
  "rayon",
- "shockwave-core",
+ "shockwave-math",
 ]
 
 [[package]]

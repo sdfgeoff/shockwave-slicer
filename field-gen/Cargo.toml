@@ -2,7 +2,7 @@
 members = [
     "crates/field-gen-cli",
     "crates/shockwave-clip",
-    "crates/shockwave-core",
+    "crates/shockwave-math",
     "crates/shockwave-gcode",
     "crates/shockwave-geodesic",
     "crates/shockwave-iso",

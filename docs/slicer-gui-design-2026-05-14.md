@@ -25,7 +25,7 @@ Date: 2026-05-14
 ## Current Codebase Facts
 
 - The Rust workspace is under `field-gen/`.
-- Existing engine crates include `shockwave-core`, `shockwave-stl`, `shockwave-voxel`, `shockwave-iso`, `shockwave-clip`, `shockwave-path`, and `shockwave-gcode`.
+- Existing engine crates include `shockwave-math`, `shockwave-stl`, `shockwave-voxel`, `shockwave-iso`, `shockwave-clip`, `shockwave-path`, and `shockwave-gcode`.
 - `field-gen-cli` still owns end-to-end orchestration, CLI parsing, progress output, and output writing.
 - A production GUI should move orchestration and slicer-facing config into a reusable slicer crate.
 
@@ -414,7 +414,7 @@ Rationale:
 
 ## Core Rename Decision
 
-Decision: rename `shockwave-core` to `shockwave-math` early in the refactor.
+Decision: rename `shockwave-math` to `shockwave-math` early in the refactor.
 
 Rationale:
 
@@ -434,7 +434,7 @@ Decision: refactor the CLI before GUI work.
 Order:
 
 1. Add regression coverage around current CLI/G-code behavior before moving code.
-2. Rename `shockwave-core` to `shockwave-math` as its own mechanical commit.
+2. Rename `shockwave-math` to `shockwave-math` as its own mechanical commit.
 3. Add `shockwave-config` when implementing persistent settings / JSON config.
 4. Add `shockwave-slicer` while moving pure slicing pipeline logic out of `field-gen-cli`.
 5. Add `shockwave-slicer-io` when moving filesystem job behavior, model loading, temp-file output, and CLI/GUI shared IO policy.

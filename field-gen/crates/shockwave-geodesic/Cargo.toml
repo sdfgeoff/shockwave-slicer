@@ -7,4 +7,4 @@ edition.workspace = true
 shockwave-mesh = { path = "../shockwave-mesh" }
 
 [dev-dependencies]
-shockwave-core = { path = "../shockwave-core" }
+shockwave-math = { path = "../shockwave-math" }

@@ -1,4 +1,4 @@
-use shockwave_core::geometry::Vec3;
+use shockwave_math::geometry::Vec3;
 use shockwave_path::{LayerToolpaths, ToolpathRole};
 
 #[derive(Clone, Copy, Debug)]
@@ -259,7 +259,7 @@ fn segment_extrusion_mm(
 
 #[cfg(test)]
 mod tests {
-    use shockwave_core::geometry::Vec3;
+    use shockwave_math::geometry::Vec3;
     use shockwave_path::{LayerToolpaths, PathPoint, Toolpath, ToolpathRole};
 
     use super::*;

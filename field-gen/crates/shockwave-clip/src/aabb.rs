@@ -1,4 +1,4 @@
-use shockwave_core::geometry::Vec3;
+use shockwave_math::geometry::Vec3;
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Aabb {

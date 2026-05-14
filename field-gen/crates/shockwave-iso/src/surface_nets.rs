@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
-use shockwave_core::geometry::Vec3;
-use shockwave_core::grid::Grid;
+use shockwave_math::geometry::Vec3;
+use shockwave_math::grid::Grid;
 use shockwave_voxel::field::Field;
 
 use crate::interpolate::{trilinear_gradient, trilinear_value};

@@ -10,7 +10,7 @@ mod aabb;
 mod classify;
 mod intersect;
 
-use shockwave_core::geometry::{Triangle, Vec2, Vec3};
+use shockwave_math::geometry::{Triangle, Vec2, Vec3};
 use shockwave_mesh::Mesh;
 
 use crate::aabb::Aabb;

@@ -1,4 +1,4 @@
-use shockwave_core::geometry::{Triangle, Vec3};
+use shockwave_math::geometry::{Triangle, Vec3};
 
 const EPSILON: f64 = 1.0e-9;
 

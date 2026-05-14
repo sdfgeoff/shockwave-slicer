@@ -4,6 +4,6 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
-shockwave-core = { path = "../shockwave-core" }
+shockwave-math = { path = "../shockwave-math" }
 shockwave-mesh = { path = "../shockwave-mesh" }
 shockwave-voxel = { path = "../shockwave-voxel" }

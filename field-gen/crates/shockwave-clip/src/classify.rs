@@ -1,4 +1,4 @@
-use shockwave_core::geometry::{Triangle, Vec3};
+use shockwave_math::geometry::{Triangle, Vec3};
 
 use crate::aabb::Aabb;
 use crate::intersect::{ray_intersects_triangle, triangles_intersect};

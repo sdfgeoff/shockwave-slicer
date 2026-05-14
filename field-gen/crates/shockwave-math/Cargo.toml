@@ -1,5 +1,5 @@
 [package]
-name = "shockwave-core"
+name = "shockwave-math"
 version.workspace = true
 edition.workspace = true
 

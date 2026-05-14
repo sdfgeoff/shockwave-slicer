@@ -2,8 +2,8 @@ use std::cmp::Ordering;
 use std::collections::BinaryHeap;
 use std::time::{Duration, Instant};
 
-use shockwave_core::geometry::Vec3;
-use shockwave_core::grid::Grid;
+use shockwave_math::geometry::Vec3;
+use shockwave_math::grid::Grid;
 
 const DEFERRED_RETRY_REACHED_INTERVAL: usize = 5_000;
 

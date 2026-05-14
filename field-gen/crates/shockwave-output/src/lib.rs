@@ -1,9 +1,9 @@
 use std::fs;
 use std::path::Path;
 
-use shockwave_core::geometry::{Bounds, Vec3};
-use shockwave_core::grid::Grid;
 use shockwave_iso::IsosurfaceSet;
+use shockwave_math::geometry::{Bounds, Vec3};
+use shockwave_math::grid::Grid;
 use shockwave_voxel::field::Field;
 
 #[derive(Clone, Copy, Debug)]

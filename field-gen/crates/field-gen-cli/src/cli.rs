@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use shockwave_core::geometry::Vec3;
+use shockwave_math::geometry::Vec3;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FieldMethod {

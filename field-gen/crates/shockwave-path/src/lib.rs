@@ -1,5 +1,5 @@
-use shockwave_core::geometry::Vec3;
 use shockwave_geodesic::GeodesicField;
+use shockwave_math::geometry::Vec3;
 use shockwave_mesh::Mesh;
 
 #[derive(Clone, Copy, Debug)]

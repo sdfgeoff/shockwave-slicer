@@ -10,10 +10,10 @@ use cli::{FieldMethod, parse_args};
 use rayon::prelude::*;
 use serde_json::Value;
 use shockwave_clip::{TriangleSolid, clip_mesh_to_solid};
-use shockwave_core::geometry::{Bounds, Triangle, Vec3, mesh_bounds};
-use shockwave_core::grid::{Grid, GridSpec, build_grid};
 use shockwave_gcode::{MarlinConfig, write_marlin_gcode};
 use shockwave_iso::{Isosurface, IsosurfaceSet, extract_regular_isosurfaces};
+use shockwave_math::geometry::{Bounds, Triangle, Vec3, mesh_bounds};
+use shockwave_math::grid::{Grid, GridSpec, build_grid};
 use shockwave_output::{
     Metadata, MetadataDocument, build_atlas, metadata_json, write_occupancy_bmp, write_ply_binary,
 };
