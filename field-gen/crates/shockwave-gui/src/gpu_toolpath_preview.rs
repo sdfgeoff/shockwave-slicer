@@ -12,7 +12,7 @@ use shockwave_math::geometry::Vec3;
 use shockwave_path::{LayerToolpaths, ToolpathRole};
 
 use crate::gpu_common::{
-    Bounds3, PREVIEW_HEIGHT, TransformUniform, Vertex3D, bed_corners, data_signature,
+    Bounds3, DEPTH_FORMAT, PREVIEW_HEIGHT, TransformUniform, Vertex3D, bed_corners, data_signature,
 };
 
 #[allow(dead_code)]
@@ -213,7 +213,13 @@ impl iced_wgpu::primitive::Pipeline for ToolpathPipeline {
                 topology: wgpu::PrimitiveTopology::LineList,
                 ..Default::default()
             },
-            depth_stencil: None,
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: DEPTH_FORMAT,
+                depth_write_enabled: false,
+                depth_compare: wgpu::CompareFunction::Less,
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
             multisample: wgpu::MultisampleState::default(),
             multiview: None,
             cache: None,
