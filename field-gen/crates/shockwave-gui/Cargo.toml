@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
-iced = { version = "0.14.0", features = ["tokio"] }
+iced = { version = "0.14.0", features = ["canvas", "tokio"] }
 rfd = "0.17.2"
 shockwave-config = { path = "../shockwave-config" }
 shockwave-slicer = { path = "../shockwave-slicer" }

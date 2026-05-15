@@ -10,6 +10,7 @@ use shockwave_config::{SlicerSettings, load_settings_or_default, save_settings, 
 use shockwave_slicer::{CancellationToken, SliceProgress};
 use shockwave_slicer_io::{SliceDebugOutput, SliceJobOutput, SliceJobRequest, run_slice_job};
 
+use crate::preview_canvas;
 use crate::settings_form::{SettingsForm, SettingsMessage};
 
 pub fn run() -> iced::Result {
@@ -325,6 +326,8 @@ fn view(state: &ShockwaveGui) -> Element<'_, Message> {
             )),
         ]
         .spacing(16),
+        text("Preview").size(24),
+        preview_canvas::test_triangle_view(),
         text("Settings").size(24),
         state.settings_form.view().map(Message::Settings),
         button("Save settings").on_press(Message::SaveSettings),
