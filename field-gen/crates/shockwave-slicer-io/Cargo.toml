@@ -8,6 +8,7 @@ serde_json = "1.0"
 shockwave-config = { path = "../shockwave-config" }
 shockwave-iso = { path = "../shockwave-iso" }
 shockwave-math = { path = "../shockwave-math" }
+shockwave-mesh = { path = "../shockwave-mesh" }
 shockwave-output = { path = "../shockwave-output" }
 shockwave-path = { path = "../shockwave-path" }
 shockwave-slicer = { path = "../shockwave-slicer" }

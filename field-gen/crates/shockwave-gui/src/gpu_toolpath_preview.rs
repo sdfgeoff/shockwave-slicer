@@ -168,7 +168,7 @@ impl iced_wgpu::primitive::Pipeline for ToolpathPipeline {
     fn new(device: &wgpu::Device, _queue: &wgpu::Queue, format: wgpu::TextureFormat) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("shockwave-gui.gpu-toolpath-preview.shader"),
-            source: wgpu::ShaderSource::Wgsl(TOOLPATH_SHADER.into()),
+            source: wgpu::ShaderSource::Wgsl(include_str!("shaders/toolpath_preview.wgsl").into()),
         });
         let uniform_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -337,38 +337,6 @@ fn role_color(role: ToolpathRole) -> [f32; 3] {
         ToolpathRole::Travel => [0.62, 0.64, 0.68],
     }
 }
-
-const TOOLPATH_SHADER: &str = r#"
-struct Transform {
-    matrix: mat4x4<f32>,
-};
-
-struct VertexInput {
-    @location(0) position: vec3<f32>,
-    @location(1) color: vec3<f32>,
-};
-
-struct VertexOutput {
-    @builtin(position) position: vec4<f32>,
-    @location(0) color: vec3<f32>,
-};
-
-@group(0) @binding(0)
-var<uniform> transform: Transform;
-
-@vertex
-fn vs_main(input: VertexInput) -> VertexOutput {
-    var output: VertexOutput;
-    output.position = transform.matrix * vec4<f32>(input.position, 1.0);
-    output.color = input.color;
-    return output;
-}
-
-@fragment
-fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
-    return vec4<f32>(input.color, 1.0);
-}
-"#;
 
 #[cfg(test)]
 mod tests {

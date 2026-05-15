@@ -6,6 +6,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use shockwave_math::geometry::{Bounds, Triangle};
+use shockwave_mesh::Mesh;
 use shockwave_path::LayerToolpaths;
 use shockwave_slicer::{SliceSettings, write_gcode};
 
@@ -52,6 +53,11 @@ pub fn load_stl_model(path: impl AsRef<Path>) -> Result<Vec<Triangle>, String> {
         return Err("STL did not contain any triangles".to_string());
     }
     Ok(triangles)
+}
+
+pub fn load_model_mesh(path: impl AsRef<Path>) -> Result<Mesh, String> {
+    let triangles = load_stl_model(path)?;
+    Ok(Mesh::from_triangles(&triangles))
 }
 
 pub fn write_gcode_atomically(

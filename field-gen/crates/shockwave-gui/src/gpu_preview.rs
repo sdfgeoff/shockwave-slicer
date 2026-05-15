@@ -7,7 +7,8 @@ use iced::advanced::{Layout, Widget, mouse};
 use iced::{Element, Length, Rectangle, Size, Theme};
 use iced_wgpu::wgpu;
 use shockwave_config::Dimensions3;
-use shockwave_math::geometry::{Triangle, Vec3};
+use shockwave_math::geometry::Vec3;
+use shockwave_mesh::Mesh;
 
 use crate::gpu_common::{
     Bounds3, PREVIEW_HEIGHT, TransformUniform, Vertex3D, bed_corners, data_signature,
@@ -33,18 +34,16 @@ pub struct ModelPreviewGeometry {
 }
 
 impl ModelPreviewGeometry {
-    pub fn from_scene(triangles: &[Triangle], print_volume: Dimensions3) -> Self {
+    pub fn from_scene(mesh: &Mesh, print_volume: Dimensions3) -> Self {
         let mut bounds = Bounds3::from_print_volume(print_volume);
-        for triangle in triangles {
-            for vertex in triangle.vertices {
-                bounds.include(vertex);
-            }
+        for vertex in &mesh.vertices {
+            bounds.include(*vertex);
         }
 
-        let mut vertices = Vec::with_capacity(4 + triangles.len() * 3);
-        let mut indices = Vec::with_capacity(6 + triangles.len() * 3);
+        let mut vertices = Vec::with_capacity(4 + mesh.vertices.len());
+        let mut indices = Vec::with_capacity(6 + mesh.triangles.len() * 3);
         push_bed(&mut vertices, &mut indices, print_volume);
-        push_model(&mut vertices, &mut indices, triangles);
+        push_model(&mut vertices, &mut indices, mesh);
 
         let signature = geometry_signature(&vertices, &indices);
         Self {
@@ -63,7 +62,7 @@ impl ModelPreviewGeometry {
 impl Default for ModelPreviewGeometry {
     fn default() -> Self {
         Self::from_scene(
-            &[],
+            &Mesh::default(),
             Dimensions3 {
                 x: 1.0,
                 y: 1.0,
@@ -164,11 +163,23 @@ fn push_bed(vertices: &mut Vec<Vertex3D>, indices: &mut Vec<u32>, print_volume: 
     push_quad(vertices, indices, bed_corners(print_volume), color);
 }
 
-fn push_model(vertices: &mut Vec<Vertex3D>, indices: &mut Vec<u32>, triangles: &[Triangle]) {
-    for triangle in triangles {
-        let normal = triangle_normal(triangle);
+fn push_model(vertices: &mut Vec<Vertex3D>, indices: &mut Vec<u32>, mesh: &Mesh) {
+    let start = vertices.len() as u32;
+    vertices.extend(
+        mesh.vertices
+            .iter()
+            .copied()
+            .map(|point| Vertex3D::new(point, [0.08, 0.62, 0.96])),
+    );
+
+    for triangle in &mesh.triangles {
+        let points = mesh.triangle_vertices(*triangle);
+        let normal = triangle_normal(points);
         let shade = (0.38 + normal.z.abs() * 0.42).clamp(0.22, 0.92) as f32;
-        push_triangle(vertices, indices, triangle.vertices, [0.08, shade, 0.96]);
+        for index in triangle {
+            vertices[start as usize + *index].color = [0.08, shade, 0.96];
+        }
+        indices.extend(triangle.map(|index| start + index as u32));
     }
 }
 
@@ -183,21 +194,10 @@ fn push_quad(
     indices.extend([start, start + 1, start + 2, start, start + 2, start + 3]);
 }
 
-fn push_triangle(
-    vertices: &mut Vec<Vertex3D>,
-    indices: &mut Vec<u32>,
-    points: [Vec3; 3],
-    color: [f32; 3],
-) {
-    let start = vertices.len() as u32;
-    vertices.extend(points.map(|point| Vertex3D::new(point, color)));
-    indices.extend([start, start + 1, start + 2]);
-}
-
-fn triangle_normal(triangle: &Triangle) -> Vec3 {
-    let a = triangle.vertices[0];
-    let b = triangle.vertices[1];
-    let c = triangle.vertices[2];
+fn triangle_normal(points: [Vec3; 3]) -> Vec3 {
+    let a = points[0];
+    let b = points[1];
+    let c = points[2];
     let ux = b.x - a.x;
     let uy = b.y - a.y;
     let uz = b.z - a.z;
@@ -236,8 +236,8 @@ mod tests {
 
     #[test]
     fn preview_scene_contains_bed_and_indexed_model_vertices() {
-        let triangle = Triangle {
-            vertices: [
+        let mesh = Mesh {
+            vertices: vec![
                 Vec3 {
                     x: 0.0,
                     y: 0.0,
@@ -254,9 +254,10 @@ mod tests {
                     z: 5.0,
                 },
             ],
+            triangles: vec![[0, 1, 2]],
         };
         let preview = ModelPreviewGeometry::from_scene(
-            &[triangle],
+            &mesh,
             Dimensions3 {
                 x: 100.0,
                 y: 100.0,

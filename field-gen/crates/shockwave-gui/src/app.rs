@@ -8,11 +8,11 @@ use iced::widget::{button, column, container, progress_bar, row, scrollable, tex
 use iced::{Element, Fill, Subscription, Theme, time};
 use rfd::FileDialog;
 use shockwave_config::{SlicerSettings, load_settings_or_default, save_settings, settings_path};
-use shockwave_math::geometry::Triangle;
+use shockwave_mesh::Mesh;
 use shockwave_path::LayerToolpaths;
 use shockwave_slicer::{CancellationToken, SliceProgress};
 use shockwave_slicer_io::{
-    SliceDebugOutput, SliceJobOutput, SliceJobRequest, load_stl_model, run_slice_job,
+    SliceDebugOutput, SliceJobOutput, SliceJobRequest, load_model_mesh, run_slice_job,
 };
 
 use crate::settings_form::{SettingsForm, SettingsMessage};
@@ -33,7 +33,7 @@ struct ShockwaveGui {
     settings_path: Option<PathBuf>,
     input_path: Option<PathBuf>,
     output_prefix: Option<PathBuf>,
-    preview_triangles: Vec<Triangle>,
+    preview_mesh: Mesh,
     preview_layers: Vec<LayerToolpaths>,
     model_preview: Arc<gpu_preview::ModelPreviewGeometry>,
     toolpath_preview: Arc<gpu_toolpath_preview::ToolpathPreviewGeometry>,
@@ -62,7 +62,7 @@ impl ShockwaveGui {
             settings_path: None,
             input_path: None,
             output_prefix: None,
-            preview_triangles: Vec::new(),
+            preview_mesh: Mesh::default(),
             preview_layers: Vec::new(),
             model_preview: Arc::new(gpu_preview::ModelPreviewGeometry::default()),
             toolpath_preview: Arc::new(gpu_toolpath_preview::ToolpathPreviewGeometry::default()),
@@ -130,21 +130,21 @@ impl ShockwaveGui {
             if self.output_prefix.is_none() {
                 self.output_prefix = Some(path.with_extension(""));
             }
-            match load_stl_model(&path) {
-                Ok(triangles) => {
+            match load_model_mesh(&path) {
+                Ok(mesh) => {
                     self.status = format!(
-                        "Selected STL {} ({} triangles)",
+                        "Selected model {} ({} triangles)",
                         path.display(),
-                        triangles.len()
+                        mesh.triangles.len()
                     );
-                    self.preview_triangles = triangles;
+                    self.preview_mesh = mesh;
                     self.preview_layers.clear();
                     self.refresh_preview_geometry();
                     self.input_path = Some(path);
                 }
                 Err(error) => {
                     self.status = error;
-                    self.preview_triangles.clear();
+                    self.preview_mesh = Mesh::default();
                     self.preview_layers.clear();
                     self.refresh_preview_geometry();
                     self.input_path = Some(path);
@@ -280,7 +280,7 @@ impl ShockwaveGui {
 
     fn refresh_preview_geometry(&mut self) {
         self.model_preview = Arc::new(gpu_preview::ModelPreviewGeometry::from_scene(
-            &self.preview_triangles,
+            &self.preview_mesh,
             self.settings.printer.print_volume_mm,
         ));
         self.refresh_toolpath_preview();
