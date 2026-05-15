@@ -1,10 +1,3 @@
-use std::sync::Arc;
-
-use iced::advanced::layout;
-use iced::advanced::renderer;
-use iced::advanced::widget::Tree;
-use iced::advanced::{Layout, Widget, mouse};
-use iced::{Element, Length, Rectangle, Size, Theme};
 use iced_wgpu::wgpu;
 use iced_wgpu::wgpu::util::DeviceExt;
 use shockwave_config::Dimensions3;
@@ -12,19 +5,8 @@ use shockwave_math::geometry::Vec3;
 use shockwave_path::{LayerToolpaths, ToolpathRole};
 
 use crate::gpu_common::{
-    Bounds3, DEPTH_FORMAT, PREVIEW_HEIGHT, TransformUniform, Vertex3D, bed_corners, data_signature,
+    Bounds3, DEPTH_FORMAT, TransformUniform, Vertex3D, bed_corners, data_signature,
 };
-
-#[allow(dead_code)]
-pub fn scene_view<Message: 'static>(
-    geometry: Arc<ToolpathPreviewGeometry>,
-) -> Element<'static, Message> {
-    Element::new(GpuToolpathPreview {
-        geometry,
-        width: Length::Fill,
-        height: Length::Fixed(PREVIEW_HEIGHT),
-    })
-}
 
 #[derive(Clone, Debug)]
 pub struct ToolpathPreviewGeometry {
@@ -71,87 +53,6 @@ impl Default for ToolpathPreviewGeometry {
                 z: 1.0,
             },
         )
-    }
-}
-
-#[derive(Debug)]
-struct GpuToolpathPreview {
-    geometry: Arc<ToolpathPreviewGeometry>,
-    width: Length,
-    height: Length,
-}
-
-impl<Message, Renderer> Widget<Message, Theme, Renderer> for GpuToolpathPreview
-where
-    Renderer: iced::advanced::Renderer + iced_wgpu::primitive::Renderer,
-{
-    fn size(&self) -> Size<Length> {
-        Size {
-            width: self.width,
-            height: self.height,
-        }
-    }
-
-    fn layout(
-        &mut self,
-        _tree: &mut Tree,
-        _renderer: &Renderer,
-        limits: &layout::Limits,
-    ) -> layout::Node {
-        layout::atomic(limits, self.width, self.height)
-    }
-
-    fn draw(
-        &self,
-        _tree: &Tree,
-        renderer: &mut Renderer,
-        _theme: &Theme,
-        _style: &renderer::Style,
-        layout: Layout<'_>,
-        _cursor: mouse::Cursor,
-        _viewport: &Rectangle,
-    ) {
-        renderer.draw_primitive(
-            layout.bounds(),
-            ToolpathPrimitive {
-                geometry: Arc::clone(&self.geometry),
-            },
-        );
-    }
-}
-
-impl<'a, Message, Renderer> From<GpuToolpathPreview> for Element<'a, Message, Theme, Renderer>
-where
-    Message: 'a,
-    Renderer: iced::advanced::Renderer + iced_wgpu::primitive::Renderer + 'a,
-{
-    fn from(value: GpuToolpathPreview) -> Self {
-        Element::new(value)
-    }
-}
-
-#[derive(Debug)]
-struct ToolpathPrimitive {
-    geometry: Arc<ToolpathPreviewGeometry>,
-}
-
-impl iced_wgpu::Primitive for ToolpathPrimitive {
-    type Pipeline = ToolpathPipeline;
-
-    fn prepare(
-        &self,
-        pipeline: &mut Self::Pipeline,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        _bounds: &Rectangle,
-        _viewport: &iced_wgpu::graphics::Viewport,
-    ) {
-        pipeline.prepare(device, queue, &self.geometry);
-    }
-
-    fn draw(&self, pipeline: &Self::Pipeline, render_pass: &mut wgpu::RenderPass<'_>) -> bool {
-        pipeline.draw(render_pass, self.geometry.vertex_count());
-        true
     }
 }
 
@@ -216,7 +117,7 @@ impl iced_wgpu::primitive::Pipeline for ToolpathPipeline {
             depth_stencil: Some(wgpu::DepthStencilState {
                 format: DEPTH_FORMAT,
                 depth_write_enabled: false,
-                depth_compare: wgpu::CompareFunction::Less,
+                depth_compare: wgpu::CompareFunction::LessEqual,
                 stencil: wgpu::StencilState::default(),
                 bias: wgpu::DepthBiasState::default(),
             }),

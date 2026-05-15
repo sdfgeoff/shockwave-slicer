@@ -1,30 +1,8 @@
-use std::sync::Arc;
-
-use iced::advanced::layout;
-use iced::advanced::renderer;
-use iced::advanced::widget::Tree;
-use iced::advanced::{Layout, Widget, mouse};
-use iced::{Element, Length, Rectangle, Size, Theme};
-use iced_wgpu::wgpu;
 use shockwave_config::Dimensions3;
 use shockwave_math::geometry::Vec3;
 use shockwave_mesh::Mesh;
 
-use crate::gpu_common::{
-    Bounds3, PREVIEW_HEIGHT, TransformUniform, Vertex3D, bed_corners, data_signature,
-};
-use crate::gpu_mesh_pipeline::MeshPipeline;
-
-#[allow(dead_code)]
-pub fn scene_view<Message: 'static>(
-    geometry: Arc<ModelPreviewGeometry>,
-) -> Element<'static, Message> {
-    Element::new(GpuMeshPreview {
-        geometry,
-        width: Length::Fill,
-        height: Length::Fixed(PREVIEW_HEIGHT),
-    })
-}
+use crate::gpu_common::{Bounds3, TransformUniform, Vertex3D, bed_corners, data_signature};
 
 #[derive(Clone, Debug)]
 pub struct ModelPreviewGeometry {
@@ -70,92 +48,6 @@ impl Default for ModelPreviewGeometry {
                 z: 1.0,
             },
         )
-    }
-}
-
-#[derive(Debug)]
-struct GpuMeshPreview {
-    geometry: Arc<ModelPreviewGeometry>,
-    width: Length,
-    height: Length,
-}
-
-impl<Message, Renderer> Widget<Message, Theme, Renderer> for GpuMeshPreview
-where
-    Renderer: iced::advanced::Renderer + iced_wgpu::primitive::Renderer,
-{
-    fn size(&self) -> Size<Length> {
-        Size {
-            width: self.width,
-            height: self.height,
-        }
-    }
-
-    fn layout(
-        &mut self,
-        _tree: &mut Tree,
-        _renderer: &Renderer,
-        limits: &layout::Limits,
-    ) -> layout::Node {
-        layout::atomic(limits, self.width, self.height)
-    }
-
-    fn draw(
-        &self,
-        _tree: &Tree,
-        renderer: &mut Renderer,
-        _theme: &Theme,
-        _style: &renderer::Style,
-        layout: Layout<'_>,
-        _cursor: mouse::Cursor,
-        _viewport: &Rectangle,
-    ) {
-        renderer.draw_primitive(
-            layout.bounds(),
-            MeshPrimitive {
-                geometry: Arc::clone(&self.geometry),
-            },
-        );
-    }
-}
-
-impl<'a, Message, Renderer> From<GpuMeshPreview> for Element<'a, Message, Theme, Renderer>
-where
-    Message: 'a,
-    Renderer: iced::advanced::Renderer + iced_wgpu::primitive::Renderer + 'a,
-{
-    fn from(value: GpuMeshPreview) -> Self {
-        Element::new(value)
-    }
-}
-
-#[derive(Debug)]
-struct MeshPrimitive {
-    geometry: Arc<ModelPreviewGeometry>,
-}
-
-impl iced_wgpu::Primitive for MeshPrimitive {
-    type Pipeline = MeshPipeline;
-
-    fn prepare(
-        &self,
-        pipeline: &mut Self::Pipeline,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        bounds: &Rectangle,
-        viewport: &iced_wgpu::graphics::Viewport,
-    ) {
-        pipeline.prepare(device, queue, bounds, viewport, &self.geometry);
-    }
-
-    fn render(
-        &self,
-        pipeline: &Self::Pipeline,
-        encoder: &mut wgpu::CommandEncoder,
-        target: &wgpu::TextureView,
-        clip_bounds: &Rectangle<u32>,
-    ) {
-        pipeline.render(encoder, target, clip_bounds, self.geometry.index_count());
     }
 }
 
@@ -231,8 +123,6 @@ fn geometry_signature(vertices: &[Vertex3D], indices: &[u32]) -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-
     use super::*;
 
     #[test]
@@ -269,11 +159,5 @@ mod tests {
         assert_eq!(preview.vertices.len(), 7);
         assert_eq!(preview.indices.len(), 9);
         assert_ne!(preview.signature, 0);
-    }
-
-    #[test]
-    fn scene_view_takes_shared_geometry() {
-        let geometry = Arc::new(ModelPreviewGeometry::default());
-        let _element = scene_view::<()>(geometry);
     }
 }

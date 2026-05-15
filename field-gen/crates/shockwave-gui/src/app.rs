@@ -15,8 +15,8 @@ use shockwave_slicer_io::{
     SliceDebugOutput, SliceJobOutput, SliceJobRequest, load_model_mesh, run_slice_job,
 };
 
-use crate::settings_form::{SettingsForm, SettingsMessage};
 use crate::gpu_scene_preview;
+use crate::settings_form::{SettingsForm, SettingsMessage};
 
 pub fn run() -> iced::Result {
     iced::application(ShockwaveGui::new, update, view)
@@ -277,13 +277,11 @@ impl ShockwaveGui {
     }
 
     fn refresh_preview_geometry(&mut self) {
-        self.scene_preview = Arc::new(
-            gpu_scene_preview::ScenePreviewGeometry::from_scene(
-                &self.preview_mesh,
-                &self.preview_layers,
-                self.settings.printer.print_volume_mm,
-            ),
-        );
+        self.scene_preview = Arc::new(gpu_scene_preview::ScenePreviewGeometry::from_scene(
+            &self.preview_mesh,
+            &self.preview_layers,
+            self.settings.printer.print_volume_mm,
+        ));
     }
 }
 

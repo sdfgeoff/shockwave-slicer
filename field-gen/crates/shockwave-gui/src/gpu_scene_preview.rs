@@ -10,7 +10,7 @@ use iced_wgpu::wgpu;
 use crate::gpu_common::{DEPTH_FORMAT, PREVIEW_HEIGHT};
 use crate::gpu_mesh_pipeline::MeshPipeline;
 use crate::gpu_preview::ModelPreviewGeometry;
-use crate::gpu_toolpath_preview::{ToolpathPreviewGeometry, ToolpathPipeline};
+use crate::gpu_toolpath_preview::{ToolpathPipeline, ToolpathPreviewGeometry};
 use shockwave_config::Dimensions3;
 use shockwave_mesh::Mesh;
 
@@ -122,13 +122,12 @@ impl iced_wgpu::Primitive for ScenePrimitive {
         pipeline: &mut Self::Pipeline,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-        bounds: &Rectangle,
+        _bounds: &Rectangle,
         viewport: &iced_wgpu::graphics::Viewport,
     ) {
         pipeline.prepare(
             device,
             queue,
-            bounds,
             viewport,
             &self.geometry.mesh,
             &self.geometry.toolpath,
@@ -176,18 +175,14 @@ impl ScenePipeline {
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-        bounds: &Rectangle,
         viewport: &iced_wgpu::graphics::Viewport,
         mesh_geometry: &ModelPreviewGeometry,
         toolpath_geometry: &ToolpathPreviewGeometry,
     ) {
         self.prepare_depth_texture(device, viewport.physical_size());
-        self.mesh_pipeline
-            .prepare(device, queue, bounds, viewport, mesh_geometry);
-        // Note: we don't call mesh_pipeline.prepare_depth_texture since we manage
-        // the shared depth texture ourselves. Clear the one created by mesh_pipeline.
-        self.mesh_pipeline.clear_depth_texture();
-        self.toolpath_pipeline.prepare(device, queue, toolpath_geometry);
+        self.mesh_pipeline.prepare(device, queue, mesh_geometry);
+        self.toolpath_pipeline
+            .prepare(device, queue, toolpath_geometry);
     }
 
     pub(crate) fn render(
@@ -240,22 +235,7 @@ impl ScenePipeline {
     }
 
     fn draw_mesh(&self, render_pass: &mut wgpu::RenderPass, index_count: u32) {
-        let (Some(vertex_buffer), Some(index_buffer), Some(bind_group)) = (
-            self.mesh_pipeline.vertex_buffer(),
-            self.mesh_pipeline.index_buffer(),
-            self.mesh_pipeline.uniform_bind_group(),
-        ) else {
-            return;
-        };
-        if index_count == 0 {
-            return;
-        }
-
-        render_pass.set_pipeline(self.mesh_pipeline.pipeline());
-        render_pass.set_bind_group(0, bind_group, &[]);
-        render_pass.set_vertex_buffer(0, vertex_buffer.slice(..));
-        render_pass.set_index_buffer(index_buffer.slice(..), wgpu::IndexFormat::Uint32);
-        render_pass.draw_indexed(0..index_count, 0, 0..1);
+        self.mesh_pipeline.draw(render_pass, index_count);
     }
 
     fn draw_toolpaths(&self, render_pass: &mut wgpu::RenderPass, vertex_count: u32) {
