@@ -5,6 +5,7 @@ use shockwave_math::geometry::Vec3;
 
 pub const PREVIEW_HEIGHT: f32 = 280.0;
 pub const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
+const MIN_DEPTH_SPAN_MM: f32 = 1000.0;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ViewportSize {
@@ -46,9 +47,11 @@ impl CameraTransform {
         let scale = 1.72 * zoom / width.max(height);
         let offset_x = -0.86 - min_x * scale;
         let offset_y = 0.86 + min_y * scale;
-        let depth_range = (max_z - min_z).max(1.0);
-        let depth_scale = -0.82 / depth_range;
-        let depth_offset = 0.91 - min_z * depth_scale;
+        let depth_span = (max_z - min_z).max(MIN_DEPTH_SPAN_MM);
+        let depth_midpoint = (min_z + max_z) * 0.5;
+        let depth_min = depth_midpoint - depth_span * 0.5;
+        let depth_scale = -0.9 / depth_span;
+        let depth_offset = 0.95 - depth_min * depth_scale;
         let fit = [
             [scale, 0.0, 0.0, 0.0],
             [0.0, -scale, 0.0, 0.0],
@@ -280,12 +283,12 @@ fn identity_matrix() -> [[f32; 4]; 4] {
 
 fn mat4_mul(left: [[f32; 4]; 4], right: [[f32; 4]; 4]) -> [[f32; 4]; 4] {
     let mut out = [[0.0; 4]; 4];
-    for row in 0..4 {
-        for column in 0..4 {
-            out[row][column] = left[row][0] * right[0][column]
-                + left[row][1] * right[1][column]
-                + left[row][2] * right[2][column]
-                + left[row][3] * right[3][column];
+    for column in 0..4 {
+        for row in 0..4 {
+            out[column][row] = left[0][row] * right[column][0]
+                + left[1][row] * right[column][1]
+                + left[2][row] * right[column][2]
+                + left[3][row] * right[column][3];
         }
     }
     out
@@ -330,4 +333,66 @@ fn range(values: [f64; 8]) -> (f32, f32) {
         max = max.max(*value as f32);
     }
     (min, max)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn matrix_multiplication_matches_wgsl_column_major_layout() {
+        let scale = [
+            [2.0, 0.0, 0.0, 0.0],
+            [0.0, 2.0, 0.0, 0.0],
+            [0.0, 0.0, 2.0, 0.0],
+            [0.0, 0.0, 0.0, 1.0],
+        ];
+        let translate = [
+            [1.0, 0.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0, 0.0],
+            [10.0, 20.0, 30.0, 1.0],
+        ];
+        let transform = mat4_mul(translate, scale);
+        let point = transform_point(
+            transform,
+            Vec3 {
+                x: 1.0,
+                y: 2.0,
+                z: 3.0,
+            },
+        );
+
+        assert_close(point.x, 12.0);
+        assert_close(point.y, 24.0);
+        assert_close(point.z, 36.0);
+    }
+
+    #[test]
+    fn orbit_camera_keeps_bed_depth_inside_clip_space_with_large_depth_span() {
+        let bounds = SceneBounds::from_print_volume(Dimensions3 {
+            x: 300.0,
+            y: 300.0,
+            z: 300.0,
+        });
+        let camera = CameraTransform::orbit(bounds, 0.8, 0.6, 1.0);
+        let transformed = bounds
+            .corners()
+            .map(|point| transform_point(camera.matrix, point));
+
+        for point in transformed {
+            assert!(
+                (0.0..=1.0).contains(&(point.z as f32)),
+                "depth {} was outside clip range",
+                point.z
+            );
+        }
+    }
+
+    fn assert_close(actual: f64, expected: f64) {
+        assert!(
+            (actual - expected).abs() < 1e-6,
+            "expected {expected}, got {actual}"
+        );
+    }
 }
