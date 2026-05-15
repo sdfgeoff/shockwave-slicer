@@ -1,23 +1,25 @@
 use crate::common::{DEPTH_FORMAT, ScissorRect, ViewportSize};
-use crate::geometry::ScenePreviewGeometry;
 use crate::mesh_pipeline::MeshPipeline;
+use crate::scene::RenderScene;
 use crate::toolpath_pipeline::ToolpathPipeline;
 
 #[derive(Debug)]
 pub struct SceneRenderer {
-    mesh_pipeline: MeshPipeline,
-    toolpath_pipeline: ToolpathPipeline,
+    mesh_pipelines: Vec<MeshPipeline>,
+    line_pipelines: Vec<ToolpathPipeline>,
     depth_texture: Option<wgpu::TextureView>,
     depth_size: Option<wgpu::Extent3d>,
+    format: wgpu::TextureFormat,
 }
 
 impl SceneRenderer {
     pub fn new(device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
         Self {
-            mesh_pipeline: MeshPipeline::new(device, format),
-            toolpath_pipeline: ToolpathPipeline::new(device, format),
+            mesh_pipelines: vec![MeshPipeline::new(device, format)],
+            line_pipelines: vec![ToolpathPipeline::new(device, format)],
             depth_texture: None,
             depth_size: None,
+            format,
         }
     }
 
@@ -25,20 +27,35 @@ impl SceneRenderer {
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-        geometry: &ScenePreviewGeometry,
+        scene: &RenderScene,
         viewport: ViewportSize,
     ) {
         self.prepare_depth_texture(device, viewport);
-        self.mesh_pipeline.prepare(device, queue, &geometry.mesh);
-        self.toolpath_pipeline
-            .prepare(device, queue, &geometry.toolpath);
+        resize_pipelines(
+            &mut self.mesh_pipelines,
+            scene.meshes.len(),
+            device,
+            self.format,
+        );
+        resize_pipelines(
+            &mut self.line_pipelines,
+            scene.lines.len(),
+            device,
+            self.format,
+        );
+        for (pipeline, mesh) in self.mesh_pipelines.iter_mut().zip(&scene.meshes) {
+            pipeline.prepare(device, queue, scene.camera, mesh);
+        }
+        for (pipeline, lines) in self.line_pipelines.iter_mut().zip(&scene.lines) {
+            pipeline.prepare(device, queue, scene.camera, lines);
+        }
     }
 
     pub fn render(
         &self,
         encoder: &mut wgpu::CommandEncoder,
         target: &wgpu::TextureView,
-        geometry: &ScenePreviewGeometry,
+        scene: &RenderScene,
         scissor: ScissorRect,
     ) {
         let Some(depth_view) = self.depth_texture.as_ref() else {
@@ -72,10 +89,12 @@ impl SceneRenderer {
         });
 
         render_pass.set_scissor_rect(scissor.x, scissor.y, scissor.width, scissor.height);
-        self.mesh_pipeline
-            .draw(&mut render_pass, geometry.mesh.index_count());
-        self.toolpath_pipeline
-            .draw(&mut render_pass, geometry.toolpath.vertex_count());
+        for (pipeline, mesh) in self.mesh_pipelines.iter().zip(&scene.meshes) {
+            pipeline.draw(&mut render_pass, mesh.index_count());
+        }
+        for (pipeline, lines) in self.line_pipelines.iter().zip(&scene.lines) {
+            pipeline.draw(&mut render_pass, lines.vertex_count());
+        }
     }
 
     fn prepare_depth_texture(&mut self, device: &wgpu::Device, size: ViewportSize) {
@@ -100,5 +119,35 @@ impl SceneRenderer {
         });
         self.depth_texture = Some(texture.create_view(&wgpu::TextureViewDescriptor::default()));
         self.depth_size = Some(extent);
+    }
+}
+
+fn resize_pipelines<T>(
+    pipelines: &mut Vec<T>,
+    target_len: usize,
+    device: &wgpu::Device,
+    format: wgpu::TextureFormat,
+) where
+    T: RenderPipelineFactory,
+{
+    while pipelines.len() < target_len {
+        pipelines.push(T::new_pipeline(device, format));
+    }
+    pipelines.truncate(target_len);
+}
+
+trait RenderPipelineFactory {
+    fn new_pipeline(device: &wgpu::Device, format: wgpu::TextureFormat) -> Self;
+}
+
+impl RenderPipelineFactory for MeshPipeline {
+    fn new_pipeline(device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
+        Self::new(device, format)
+    }
+}
+
+impl RenderPipelineFactory for ToolpathPipeline {
+    fn new_pipeline(device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
+        Self::new(device, format)
     }
 }

@@ -36,6 +36,9 @@ struct ShockwaveGui {
     preview_mesh: Mesh,
     preview_layers: Vec<LayerToolpaths>,
     scene_preview: Arc<gpu_scene_preview::ScenePreviewGeometry>,
+    camera_yaw_radians: f32,
+    camera_pitch_radians: f32,
+    camera_zoom: f32,
     slice_job: Option<SliceJobState>,
     status: String,
 }
@@ -64,6 +67,9 @@ impl ShockwaveGui {
             preview_mesh: Mesh::default(),
             preview_layers: Vec::new(),
             scene_preview: Arc::new(gpu_scene_preview::ScenePreviewGeometry::default()),
+            camera_yaw_radians: -std::f32::consts::FRAC_PI_4,
+            camera_pitch_radians: 0.55,
+            camera_zoom: 1.0,
             slice_job: None,
             status: "Loading settings".to_string(),
         };
@@ -277,11 +283,26 @@ impl ShockwaveGui {
     }
 
     fn refresh_preview_geometry(&mut self) {
-        self.scene_preview = Arc::new(gpu_scene_preview::ScenePreviewGeometry::from_scene(
-            &self.preview_mesh,
-            &self.preview_layers,
-            self.settings.printer.print_volume_mm,
-        ));
+        self.scene_preview = Arc::new(
+            gpu_scene_preview::ScenePreviewGeometry::from_scene(
+                &self.preview_mesh,
+                &self.preview_layers,
+                self.settings.printer.print_volume_mm,
+            )
+            .with_orbit_camera(
+                self.camera_yaw_radians,
+                self.camera_pitch_radians,
+                self.camera_zoom,
+            ),
+        );
+    }
+
+    fn rotate_camera(&mut self, drag: gpu_scene_preview::CameraDrag) {
+        const SENSITIVITY: f32 = 0.01;
+        self.camera_yaw_radians += drag.delta_x * SENSITIVITY;
+        self.camera_pitch_radians =
+            (self.camera_pitch_radians + drag.delta_y * SENSITIVITY).clamp(-1.45, 1.45);
+        self.refresh_preview_geometry();
     }
 }
 
@@ -293,6 +314,7 @@ enum Message {
     Slice,
     CancelSlice,
     PollSlice,
+    CameraDragged(gpu_scene_preview::CameraDrag),
     Settings(SettingsMessage),
 }
 
@@ -304,6 +326,7 @@ fn update(state: &mut ShockwaveGui, message: Message) {
         Message::Slice => state.start_slice(),
         Message::CancelSlice => state.cancel_slice(),
         Message::PollSlice => state.poll_slice_events(),
+        Message::CameraDragged(drag) => state.rotate_camera(drag),
         Message::Settings(message) => {
             state.settings_form.update(message);
         }
@@ -368,7 +391,7 @@ fn view(state: &ShockwaveGui) -> Element<'_, Message> {
         ]
         .spacing(16),
         text("GPU Preview").size(24),
-        gpu_scene_preview::scene_view(Arc::clone(&state.scene_preview)),
+        gpu_scene_preview::scene_view(Arc::clone(&state.scene_preview), Message::CameraDragged),
         text("Settings").size(24),
         state.settings_form.view().map(Message::Settings),
         button("Save settings").on_press(Message::SaveSettings),

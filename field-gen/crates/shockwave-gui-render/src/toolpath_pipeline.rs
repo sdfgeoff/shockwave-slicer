@@ -1,7 +1,7 @@
 use wgpu::util::DeviceExt;
 
 use crate::common::{DEPTH_FORMAT, TransformUniform, Vertex3D};
-use crate::geometry::ToolpathPreviewGeometry;
+use crate::scene::RenderLines;
 
 #[derive(Debug)]
 pub(crate) struct ToolpathPipeline {
@@ -87,21 +87,26 @@ impl ToolpathPipeline {
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-        geometry: &ToolpathPreviewGeometry,
+        camera: crate::CameraTransform,
+        lines: &RenderLines,
     ) {
-        self.prepare_uniform(device, queue, geometry.transform);
-        if self.signature == Some(geometry.signature) {
+        self.prepare_uniform(
+            device,
+            queue,
+            TransformUniform::from_camera_object(camera, lines.transform),
+        );
+        if self.signature == Some(lines.signature) {
             return;
         }
 
         self.vertex_buffer = Some(
             device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("shockwave-gui-render.toolpath-preview.vertices"),
-                contents: bytemuck::cast_slice(&geometry.vertices),
+                contents: bytemuck::cast_slice(&lines.vertices),
                 usage: wgpu::BufferUsages::VERTEX,
             }),
         );
-        self.signature = Some(geometry.signature);
+        self.signature = Some(lines.signature);
     }
 
     pub(crate) fn draw(&self, render_pass: &mut wgpu::RenderPass<'_>, vertex_count: u32) {

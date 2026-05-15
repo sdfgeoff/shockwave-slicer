@@ -1,7 +1,7 @@
 use wgpu::util::DeviceExt;
 
 use crate::common::{DEPTH_FORMAT, TransformUniform, Vertex3D};
-use crate::geometry::ModelPreviewGeometry;
+use crate::scene::RenderMesh;
 
 #[derive(Debug)]
 pub(crate) struct MeshPipeline {
@@ -91,28 +91,33 @@ impl MeshPipeline {
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-        geometry: &ModelPreviewGeometry,
+        camera: crate::CameraTransform,
+        mesh: &RenderMesh,
     ) {
-        self.prepare_uniform(device, queue, geometry.transform);
-        if self.signature == Some(geometry.signature) {
+        self.prepare_uniform(
+            device,
+            queue,
+            TransformUniform::from_camera_object(camera, mesh.transform),
+        );
+        if self.signature == Some(mesh.signature) {
             return;
         }
 
         self.vertex_buffer = Some(
             device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("shockwave-gui-render.mesh-preview.vertices"),
-                contents: bytemuck::cast_slice(&geometry.vertices),
+                contents: bytemuck::cast_slice(&mesh.vertices),
                 usage: wgpu::BufferUsages::VERTEX,
             }),
         );
         self.index_buffer = Some(
             device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("shockwave-gui-render.mesh-preview.indices"),
-                contents: bytemuck::cast_slice(&geometry.indices),
+                contents: bytemuck::cast_slice(&mesh.indices),
                 usage: wgpu::BufferUsages::INDEX,
             }),
         );
-        self.signature = Some(geometry.signature);
+        self.signature = Some(mesh.signature);
     }
 
     pub(crate) fn draw(&self, render_pass: &mut wgpu::RenderPass<'_>, index_count: u32) {

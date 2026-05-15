@@ -20,6 +20,75 @@ pub struct ScissorRect {
     pub height: u32,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CameraTransform {
+    pub matrix: [[f32; 4]; 4],
+}
+
+impl CameraTransform {
+    pub fn fit_isometric(bounds: SceneBounds) -> Self {
+        Self::orbit(bounds, -std::f32::consts::FRAC_PI_4, 0.55, 1.0)
+    }
+
+    pub fn orbit(bounds: SceneBounds, yaw_radians: f32, pitch_radians: f32, zoom: f32) -> Self {
+        let zoom = zoom.max(0.05);
+        let pitch = pitch_radians.clamp(-1.45, 1.45);
+        let rotation = mat4_mul(rotation_x(pitch), rotation_z(yaw_radians));
+        let rotated = bounds
+            .corners()
+            .map(|point| transform_point(rotation, point));
+        let (min_x, max_x) = range(rotated.map(|point| point.x));
+        let (min_y, max_y) = range(rotated.map(|point| point.y));
+        let (min_z, max_z) = range(rotated.map(|point| point.z));
+
+        let width = (max_x - min_x).max(1.0);
+        let height = (max_y - min_y).max(1.0);
+        let scale = 1.72 * zoom / width.max(height);
+        let offset_x = -0.86 - min_x * scale;
+        let offset_y = 0.86 + min_y * scale;
+        let depth_range = (max_z - min_z).max(1.0);
+        let depth_scale = -0.82 / depth_range;
+        let depth_offset = 0.91 - min_z * depth_scale;
+        let fit = [
+            [scale, 0.0, 0.0, 0.0],
+            [0.0, -scale, 0.0, 0.0],
+            [0.0, 0.0, depth_scale, 0.0],
+            [offset_x, offset_y, depth_offset, 1.0],
+        ];
+
+        Self {
+            matrix: mat4_mul(fit, rotation),
+        }
+    }
+}
+
+impl Default for CameraTransform {
+    fn default() -> Self {
+        Self {
+            matrix: identity_matrix(),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ObjectTransform {
+    pub matrix: [[f32; 4]; 4],
+}
+
+impl ObjectTransform {
+    pub fn identity() -> Self {
+        Self {
+            matrix: identity_matrix(),
+        }
+    }
+}
+
+impl Default for ObjectTransform {
+    fn default() -> Self {
+        Self::identity()
+    }
+}
+
 #[repr(C)]
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub(crate) struct Vertex3D {
@@ -56,44 +125,20 @@ pub(crate) struct TransformUniform {
 }
 
 impl TransformUniform {
-    pub fn from_bounds(bounds: Bounds3) -> Self {
-        let projected = bounds.projected_corners();
-        let mut min_x = projected[0].0;
-        let mut max_x = projected[0].0;
-        let mut min_y = projected[0].1;
-        let mut max_y = projected[0].1;
-        for point in projected.iter().skip(1) {
-            min_x = min_x.min(point.0);
-            max_x = max_x.max(point.0);
-            min_y = min_y.min(point.1);
-            max_y = max_y.max(point.1);
-        }
-
-        let width = (max_x - min_x).max(1.0);
-        let height = (max_y - min_y).max(1.0);
-        let scale = 1.72 / width.max(height);
-        let offset_x = -0.86 - min_x * scale;
-        let offset_y = 0.86 + min_y * scale;
-        let (depth_scale, depth_offset) = depth_transform(bounds);
-
+    pub fn from_camera_object(camera: CameraTransform, object: ObjectTransform) -> Self {
         Self {
-            matrix: [
-                [0.707 * scale, -0.35 * scale, -depth_scale, 0.0],
-                [-0.707 * scale, -0.35 * scale, -depth_scale, 0.0],
-                [0.0, 0.9 * scale, -depth_scale, 0.0],
-                [offset_x, offset_y, depth_offset, 1.0],
-            ],
+            matrix: mat4_mul(camera.matrix, object.matrix),
         }
     }
 }
 
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct Bounds3 {
+pub struct SceneBounds {
     pub min: Vec3,
     pub max: Vec3,
 }
 
-impl Bounds3 {
+impl SceneBounds {
     pub fn from_print_volume(print_volume: Dimensions3) -> Self {
         Self {
             min: Vec3 {
@@ -109,16 +154,36 @@ impl Bounds3 {
         }
     }
 
+    pub fn empty() -> Self {
+        Self {
+            min: Vec3 {
+                x: f64::INFINITY,
+                y: f64::INFINITY,
+                z: f64::INFINITY,
+            },
+            max: Vec3 {
+                x: f64::NEG_INFINITY,
+                y: f64::NEG_INFINITY,
+                z: f64::NEG_INFINITY,
+            },
+        }
+    }
+
     pub fn include(&mut self, point: Vec3) {
         self.min = self.min.min(point);
         self.max = self.max.max(point);
     }
 
-    fn projected_corners(self) -> [(f32, f32); 8] {
-        self.corners().map(project_iso)
+    pub fn include_bounds(&mut self, other: Self) {
+        self.include(other.min);
+        self.include(other.max);
     }
 
-    fn corners(self) -> [Vec3; 8] {
+    pub fn is_empty(self) -> bool {
+        !self.min.x.is_finite()
+    }
+
+    pub(crate) fn corners(self) -> [Vec3; 8] {
         [
             Vec3 {
                 x: self.min.x,
@@ -196,28 +261,73 @@ pub(crate) fn data_signature(bytes: &[u8], count: usize) -> u64 {
     hasher.finish()
 }
 
-fn project_iso(point: Vec3) -> (f32, f32) {
-    (
-        ((point.x - point.y) * 0.707) as f32,
-        ((point.x + point.y) * 0.35 - point.z * 0.9) as f32,
-    )
+pub(crate) fn geometry_signature(vertices: &[Vertex3D], indices: &[u32]) -> u64 {
+    let mut bytes =
+        Vec::with_capacity(std::mem::size_of_val(vertices) + std::mem::size_of_val(indices));
+    bytes.extend_from_slice(bytemuck::cast_slice(vertices));
+    bytes.extend_from_slice(bytemuck::cast_slice(indices));
+    data_signature(&bytes, vertices.len() + indices.len())
 }
 
-fn depth_transform(bounds: Bounds3) -> (f32, f32) {
-    let corners = bounds.corners();
-    let mut min_depth = camera_depth(corners[0]);
-    let mut max_depth = min_depth;
-    for corner in corners.iter().skip(1) {
-        let depth = camera_depth(*corner);
-        min_depth = min_depth.min(depth);
-        max_depth = max_depth.max(depth);
+fn identity_matrix() -> [[f32; 4]; 4] {
+    [
+        [1.0, 0.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0, 0.0],
+        [0.0, 0.0, 1.0, 0.0],
+        [0.0, 0.0, 0.0, 1.0],
+    ]
+}
+
+fn mat4_mul(left: [[f32; 4]; 4], right: [[f32; 4]; 4]) -> [[f32; 4]; 4] {
+    let mut out = [[0.0; 4]; 4];
+    for row in 0..4 {
+        for column in 0..4 {
+            out[row][column] = left[row][0] * right[0][column]
+                + left[row][1] * right[1][column]
+                + left[row][2] * right[2][column]
+                + left[row][3] * right[3][column];
+        }
     }
-    let range = (max_depth - min_depth).max(1.0);
-    let scale = 0.82 / range;
-    let offset = 0.91 - min_depth * scale;
-    (scale, offset)
+    out
 }
 
-fn camera_depth(point: Vec3) -> f32 {
-    (point.x + point.y + point.z) as f32
+fn rotation_x(angle: f32) -> [[f32; 4]; 4] {
+    let (sin, cos) = angle.sin_cos();
+    [
+        [1.0, 0.0, 0.0, 0.0],
+        [0.0, cos, sin, 0.0],
+        [0.0, -sin, cos, 0.0],
+        [0.0, 0.0, 0.0, 1.0],
+    ]
+}
+
+fn rotation_z(angle: f32) -> [[f32; 4]; 4] {
+    let (sin, cos) = angle.sin_cos();
+    [
+        [cos, sin, 0.0, 0.0],
+        [-sin, cos, 0.0, 0.0],
+        [0.0, 0.0, 1.0, 0.0],
+        [0.0, 0.0, 0.0, 1.0],
+    ]
+}
+
+fn transform_point(matrix: [[f32; 4]; 4], point: Vec3) -> Vec3 {
+    let x = point.x as f32;
+    let y = point.y as f32;
+    let z = point.z as f32;
+    Vec3 {
+        x: (matrix[0][0] * x + matrix[1][0] * y + matrix[2][0] * z + matrix[3][0]) as f64,
+        y: (matrix[0][1] * x + matrix[1][1] * y + matrix[2][1] * z + matrix[3][1]) as f64,
+        z: (matrix[0][2] * x + matrix[1][2] * y + matrix[2][2] * z + matrix[3][2]) as f64,
+    }
+}
+
+fn range(values: [f64; 8]) -> (f32, f32) {
+    let mut min = values[0] as f32;
+    let mut max = min;
+    for value in values.iter().skip(1) {
+        min = min.min(*value as f32);
+        max = max.max(*value as f32);
+    }
+    (min, max)
 }
