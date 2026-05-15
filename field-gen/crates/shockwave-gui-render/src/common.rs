@@ -35,18 +35,15 @@ impl CameraTransform {
         let zoom = zoom.max(0.05);
         let pitch = pitch_radians.clamp(-1.45, 1.45);
         let rotation = mat4_mul(rotation_x(pitch), rotation_z(yaw_radians));
-        let rotated = bounds
-            .corners()
-            .map(|point| transform_point(rotation, point));
-        let (min_x, max_x) = range(rotated.map(|point| point.x));
-        let (min_y, max_y) = range(rotated.map(|point| point.y));
-        let (min_z, max_z) = range(rotated.map(|point| point.z));
+        let center = bounds.center();
+        let view = mat4_mul(
+            rotation,
+            translation_matrix(-center.x as f32, -center.y as f32, -center.z as f32),
+        );
+        let transformed = bounds.corners().map(|point| transform_point(view, point));
+        let (min_z, max_z) = range(transformed.map(|point| point.z));
 
-        let width = (max_x - min_x).max(1.0);
-        let height = (max_y - min_y).max(1.0);
-        let scale = 1.72 * zoom / width.max(height);
-        let offset_x = -0.86 - min_x * scale;
-        let offset_y = 0.86 + min_y * scale;
+        let scale = 0.86 * zoom / bounds.radius().max(1.0);
         let depth_span = (max_z - min_z).max(MIN_DEPTH_SPAN_MM);
         let depth_midpoint = (min_z + max_z) * 0.5;
         let depth_min = depth_midpoint - depth_span * 0.5;
@@ -56,11 +53,11 @@ impl CameraTransform {
             [scale, 0.0, 0.0, 0.0],
             [0.0, -scale, 0.0, 0.0],
             [0.0, 0.0, depth_scale, 0.0],
-            [offset_x, offset_y, depth_offset, 1.0],
+            [0.0, 0.0, depth_offset, 1.0],
         ];
 
         Self {
-            matrix: mat4_mul(fit, rotation),
+            matrix: mat4_mul(fit, view),
         }
     }
 }
@@ -184,6 +181,27 @@ impl SceneBounds {
 
     pub fn is_empty(self) -> bool {
         !self.min.x.is_finite()
+    }
+
+    pub fn center(self) -> Vec3 {
+        Vec3 {
+            x: (self.min.x + self.max.x) * 0.5,
+            y: (self.min.y + self.max.y) * 0.5,
+            z: (self.min.z + self.max.z) * 0.5,
+        }
+    }
+
+    pub fn radius(self) -> f32 {
+        let center = self.center();
+        self.corners()
+            .iter()
+            .map(|point| {
+                let dx = point.x - center.x;
+                let dy = point.y - center.y;
+                let dz = point.z - center.z;
+                (dx * dx + dy * dy + dz * dz).sqrt() as f32
+            })
+            .fold(0.0, f32::max)
     }
 
     pub(crate) fn corners(self) -> [Vec3; 8] {
@@ -314,6 +332,15 @@ fn rotation_z(angle: f32) -> [[f32; 4]; 4] {
     ]
 }
 
+fn translation_matrix(x: f32, y: f32, z: f32) -> [[f32; 4]; 4] {
+    [
+        [1.0, 0.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0, 0.0],
+        [0.0, 0.0, 1.0, 0.0],
+        [x, y, z, 1.0],
+    ]
+}
+
 fn transform_point(matrix: [[f32; 4]; 4], point: Vec3) -> Vec3 {
     let x = point.x as f32;
     let y = point.y as f32;
@@ -389,10 +416,32 @@ mod tests {
         }
     }
 
+    #[test]
+    fn orbit_camera_keeps_constant_screen_scale_across_rotation() {
+        let bounds = SceneBounds::from_print_volume(Dimensions3 {
+            x: 300.0,
+            y: 300.0,
+            z: 300.0,
+        });
+        let camera_a = CameraTransform::orbit(bounds, 0.0, 0.4, 1.0);
+        let camera_b = CameraTransform::orbit(bounds, 1.2, 0.4, 1.0);
+        let expected_scale = 0.86 / bounds.radius() as f64;
+
+        assert_close(screen_x_scale(camera_a), expected_scale);
+        assert_close(screen_x_scale(camera_b), expected_scale);
+    }
+
     fn assert_close(actual: f64, expected: f64) {
         assert!(
             (actual - expected).abs() < 1e-6,
             "expected {expected}, got {actual}"
         );
+    }
+
+    fn screen_x_scale(camera: CameraTransform) -> f64 {
+        let x = camera.matrix[0][0] as f64;
+        let y = camera.matrix[1][0] as f64;
+        let z = camera.matrix[2][0] as f64;
+        (x * x + y * y + z * z).sqrt()
     }
 }
