@@ -1,25 +1,36 @@
+use std::hash::{Hash, Hasher};
+
 use iced::advanced::layout;
 use iced::advanced::renderer;
 use iced::advanced::widget::Tree;
 use iced::advanced::{Layout, Widget, mouse};
-use iced::{Element, Length, Rectangle, Size, Theme};
+use iced::{Element, Length, Point, Rectangle, Size, Theme};
 use iced_wgpu::wgpu;
 use iced_wgpu::wgpu::util::DeviceExt;
+use shockwave_config::Dimensions3;
+use shockwave_math::geometry::{Triangle, Vec3};
 
-pub fn triangle_view<Message: 'static>() -> Element<'static, Message> {
-    Element::new(GpuTriangle {
+pub fn scene_view<'a, Message: 'a>(
+    triangles: &'a [Triangle],
+    print_volume: Dimensions3,
+) -> Element<'a, Message> {
+    Element::new(GpuMeshPreview {
+        triangles,
+        print_volume,
         width: Length::Fill,
-        height: Length::Fixed(220.0),
+        height: Length::Fixed(280.0),
     })
 }
 
 #[derive(Debug)]
-struct GpuTriangle {
+struct GpuMeshPreview<'a> {
+    triangles: &'a [Triangle],
+    print_volume: Dimensions3,
     width: Length,
     height: Length,
 }
 
-impl<Message, Renderer> Widget<Message, Theme, Renderer> for GpuTriangle
+impl<Message, Renderer> Widget<Message, Theme, Renderer> for GpuMeshPreview<'_>
 where
     Renderer: iced::advanced::Renderer + iced_wgpu::primitive::Renderer,
 {
@@ -49,25 +60,54 @@ where
         _cursor: mouse::Cursor,
         _viewport: &Rectangle,
     ) {
-        renderer.draw_primitive(layout.bounds(), TrianglePrimitive);
+        renderer.draw_primitive(
+            layout.bounds(),
+            MeshPrimitive::from_scene(self.triangles, self.print_volume),
+        );
     }
 }
 
-impl<'a, Message, Renderer> From<GpuTriangle> for Element<'a, Message, Theme, Renderer>
+impl<'a, Message, Renderer> From<GpuMeshPreview<'a>> for Element<'a, Message, Theme, Renderer>
 where
     Message: 'a,
     Renderer: iced::advanced::Renderer + iced_wgpu::primitive::Renderer + 'a,
 {
-    fn from(value: GpuTriangle) -> Self {
+    fn from(value: GpuMeshPreview<'a>) -> Self {
         Element::new(value)
     }
 }
 
 #[derive(Debug)]
-struct TrianglePrimitive;
+struct MeshPrimitive {
+    vertices: Vec<Vertex>,
+    signature: u64,
+}
 
-impl iced_wgpu::Primitive for TrianglePrimitive {
-    type Pipeline = TrianglePipeline;
+impl MeshPrimitive {
+    fn from_scene(triangles: &[Triangle], print_volume: Dimensions3) -> Self {
+        let mut projected = bed_corners(print_volume)
+            .iter()
+            .map(|point| project(*point))
+            .collect::<Vec<_>>();
+        for triangle in triangles {
+            projected.extend(triangle.vertices.iter().map(|point| project(*point)));
+        }
+        let transform = ViewTransform::fit(&projected);
+
+        let mut vertices = Vec::with_capacity(6 + triangles.len() * 3);
+        push_bed(&mut vertices, print_volume, transform);
+        push_model(&mut vertices, triangles, transform);
+
+        let signature = vertex_signature(&vertices);
+        Self {
+            vertices,
+            signature,
+        }
+    }
+}
+
+impl iced_wgpu::Primitive for MeshPrimitive {
+    type Pipeline = MeshPipeline;
 
     fn prepare(
         &self,
@@ -77,42 +117,47 @@ impl iced_wgpu::Primitive for TrianglePrimitive {
         _bounds: &Rectangle,
         _viewport: &iced_wgpu::graphics::Viewport,
     ) {
-        pipeline.prepare(device);
+        pipeline.prepare(device, &self.vertices, self.signature);
     }
 
     fn draw(&self, pipeline: &Self::Pipeline, render_pass: &mut wgpu::RenderPass<'_>) -> bool {
         let Some(vertex_buffer) = pipeline.vertex_buffer.as_ref() else {
             return true;
         };
+        if pipeline.vertex_count == 0 {
+            return true;
+        }
 
         render_pass.set_pipeline(&pipeline.pipeline);
         render_pass.set_vertex_buffer(0, vertex_buffer.slice(..));
-        render_pass.draw(0..3, 0..1);
+        render_pass.draw(0..pipeline.vertex_count, 0..1);
         true
     }
 }
 
 #[derive(Debug)]
-struct TrianglePipeline {
+struct MeshPipeline {
     pipeline: wgpu::RenderPipeline,
     vertex_buffer: Option<wgpu::Buffer>,
+    vertex_count: u32,
+    signature: Option<u64>,
 }
 
-impl iced_wgpu::primitive::Pipeline for TrianglePipeline {
+impl iced_wgpu::primitive::Pipeline for MeshPipeline {
     fn new(device: &wgpu::Device, _queue: &wgpu::Queue, format: wgpu::TextureFormat) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("shockwave-gui.gpu-preview.shader"),
-            source: wgpu::ShaderSource::Wgsl(TRIANGLE_SHADER.into()),
+            label: Some("shockwave-gui.gpu-mesh-preview.shader"),
+            source: wgpu::ShaderSource::Wgsl(MESH_SHADER.into()),
         });
 
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("shockwave-gui.gpu-preview.pipeline-layout"),
+            label: Some("shockwave-gui.gpu-mesh-preview.pipeline-layout"),
             bind_group_layouts: &[],
             push_constant_ranges: &[],
         });
 
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("shockwave-gui.gpu-preview.pipeline"),
+            label: Some("shockwave-gui.gpu-mesh-preview.pipeline"),
             layout: Some(&layout),
             vertex: wgpu::VertexState {
                 module: &shader,
@@ -148,23 +193,33 @@ impl iced_wgpu::primitive::Pipeline for TrianglePipeline {
         Self {
             pipeline,
             vertex_buffer: None,
+            vertex_count: 0,
+            signature: None,
         }
     }
 }
 
-impl TrianglePipeline {
-    fn prepare(&mut self, device: &wgpu::Device) {
-        if self.vertex_buffer.is_some() {
+impl MeshPipeline {
+    fn prepare(&mut self, device: &wgpu::Device, vertices: &[Vertex], signature: u64) {
+        self.vertex_count = vertices.len() as u32;
+        if vertices.is_empty() {
+            self.vertex_buffer = None;
+            self.signature = None;
+            return;
+        }
+
+        if self.signature == Some(signature) {
             return;
         }
 
         self.vertex_buffer = Some(
             device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("shockwave-gui.gpu-preview.vertices"),
-                contents: bytemuck::cast_slice(&TRIANGLE_VERTICES),
+                label: Some("shockwave-gui.gpu-mesh-preview.vertices"),
+                contents: bytemuck::cast_slice(vertices),
                 usage: wgpu::BufferUsages::VERTEX,
             }),
         );
+        self.signature = Some(signature);
     }
 }
 
@@ -190,22 +245,176 @@ impl Vertex {
     }
 }
 
-const TRIANGLE_VERTICES: [Vertex; 3] = [
-    Vertex {
-        position: [0.0, 0.72],
-        color: [0.1, 0.9, 1.0],
-    },
-    Vertex {
-        position: [-0.78, -0.64],
-        color: [0.1, 0.35, 1.0],
-    },
-    Vertex {
-        position: [0.78, -0.64],
-        color: [0.8, 1.0, 0.2],
-    },
-];
+#[derive(Clone, Copy)]
+struct ViewTransform {
+    min_x: f32,
+    min_y: f32,
+    scale: f32,
+}
 
-const TRIANGLE_SHADER: &str = r#"
+impl ViewTransform {
+    fn fit(points: &[Point]) -> Self {
+        let (mut min_x, mut min_y) = (0.0, 0.0);
+        let (mut max_x, mut max_y) = (1.0, 1.0);
+        if let Some(first) = points.first() {
+            min_x = first.x;
+            max_x = first.x;
+            min_y = first.y;
+            max_y = first.y;
+            for point in points.iter().skip(1) {
+                min_x = min_x.min(point.x);
+                max_x = max_x.max(point.x);
+                min_y = min_y.min(point.y);
+                max_y = max_y.max(point.y);
+            }
+        }
+
+        let content_width = (max_x - min_x).max(1.0);
+        let content_height = (max_y - min_y).max(1.0);
+        Self {
+            min_x,
+            min_y,
+            scale: 1.72 / content_width.max(content_height),
+        }
+    }
+
+    fn apply(self, point: Point) -> [f32; 2] {
+        [
+            -0.86 + (point.x - self.min_x) * self.scale,
+            0.86 - (point.y - self.min_y) * self.scale,
+        ]
+    }
+}
+
+fn push_bed(vertices: &mut Vec<Vertex>, print_volume: Dimensions3, transform: ViewTransform) {
+    let corners = bed_corners(print_volume);
+    let color = [0.12, 0.16, 0.18];
+    push_quad(vertices, corners, transform, color);
+}
+
+fn push_model(vertices: &mut Vec<Vertex>, triangles: &[Triangle], transform: ViewTransform) {
+    let mut sorted = triangles.iter().collect::<Vec<_>>();
+    sorted.sort_by(|a, b| {
+        triangle_depth(a)
+            .partial_cmp(&triangle_depth(b))
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+
+    for triangle in sorted {
+        let normal = triangle_normal(triangle);
+        let shade = (0.38 + normal.z.abs() * 0.42).clamp(0.22, 0.92) as f32;
+        let color = [0.08, shade, 0.96];
+        push_triangle(vertices, triangle.vertices, transform, color);
+    }
+}
+
+fn push_quad(
+    vertices: &mut Vec<Vertex>,
+    points: [Vec3; 4],
+    transform: ViewTransform,
+    color: [f32; 3],
+) {
+    push_triangle(
+        vertices,
+        [points[0], points[1], points[2]],
+        transform,
+        color,
+    );
+    push_triangle(
+        vertices,
+        [points[0], points[2], points[3]],
+        transform,
+        color,
+    );
+}
+
+fn push_triangle(
+    vertices: &mut Vec<Vertex>,
+    points: [Vec3; 3],
+    transform: ViewTransform,
+    color: [f32; 3],
+) {
+    vertices.extend(points.map(|point| Vertex {
+        position: transform.apply(project(point)),
+        color,
+    }));
+}
+
+fn bed_corners(print_volume: Dimensions3) -> [Vec3; 4] {
+    [
+        Vec3 {
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        },
+        Vec3 {
+            x: print_volume.x,
+            y: 0.0,
+            z: 0.0,
+        },
+        Vec3 {
+            x: print_volume.x,
+            y: print_volume.y,
+            z: 0.0,
+        },
+        Vec3 {
+            x: 0.0,
+            y: print_volume.y,
+            z: 0.0,
+        },
+    ]
+}
+
+fn project(point: Vec3) -> Point {
+    Point::new(
+        ((point.x - point.y) * 0.707) as f32,
+        ((point.x + point.y) * 0.35 - point.z * 0.9) as f32,
+    )
+}
+
+fn triangle_depth(triangle: &Triangle) -> f64 {
+    triangle
+        .vertices
+        .iter()
+        .map(|vertex| vertex.x + vertex.y + vertex.z)
+        .sum::<f64>()
+        / 3.0
+}
+
+fn triangle_normal(triangle: &Triangle) -> Vec3 {
+    let a = triangle.vertices[0];
+    let b = triangle.vertices[1];
+    let c = triangle.vertices[2];
+    let ux = b.x - a.x;
+    let uy = b.y - a.y;
+    let uz = b.z - a.z;
+    let vx = c.x - a.x;
+    let vy = c.y - a.y;
+    let vz = c.z - a.z;
+    let normal = Vec3 {
+        x: uy * vz - uz * vy,
+        y: uz * vx - ux * vz,
+        z: ux * vy - uy * vx,
+    };
+    let length = (normal.x * normal.x + normal.y * normal.y + normal.z * normal.z).sqrt();
+    if length <= f64::EPSILON {
+        return normal;
+    }
+    Vec3 {
+        x: normal.x / length,
+        y: normal.y / length,
+        z: normal.z / length,
+    }
+}
+
+fn vertex_signature(vertices: &[Vertex]) -> u64 {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    vertices.len().hash(&mut hasher);
+    bytemuck::cast_slice::<Vertex, u8>(vertices).hash(&mut hasher);
+    hasher.finish()
+}
+
+const MESH_SHADER: &str = r#"
 struct VertexInput {
     @location(0) position: vec2<f32>,
     @location(1) color: vec3<f32>,
@@ -229,3 +438,42 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     return vec4<f32>(input.color, 1.0);
 }
 "#;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn preview_scene_contains_bed_and_model_vertices() {
+        let triangle = Triangle {
+            vertices: [
+                Vec3 {
+                    x: 0.0,
+                    y: 0.0,
+                    z: 0.0,
+                },
+                Vec3 {
+                    x: 10.0,
+                    y: 0.0,
+                    z: 0.0,
+                },
+                Vec3 {
+                    x: 0.0,
+                    y: 10.0,
+                    z: 5.0,
+                },
+            ],
+        };
+        let preview = MeshPrimitive::from_scene(
+            &[triangle],
+            Dimensions3 {
+                x: 100.0,
+                y: 100.0,
+                z: 100.0,
+            },
+        );
+
+        assert_eq!(preview.vertices.len(), 9);
+        assert_ne!(preview.signature, 0);
+    }
+}

@@ -357,8 +357,11 @@ fn view(state: &ShockwaveGui) -> Element<'_, Message> {
             &state.preview_layers,
             state.settings.printer.print_volume_mm
         ),
-        text("GPU Preview Spike").size(24),
-        gpu_preview::triangle_view(),
+        text("GPU STL Preview").size(24),
+        gpu_preview::scene_view(
+            &state.preview_triangles,
+            state.settings.printer.print_volume_mm
+        ),
         text("Settings").size(24),
         state.settings_form.view().map(Message::Settings),
         button("Save settings").on_press(Message::SaveSettings),
