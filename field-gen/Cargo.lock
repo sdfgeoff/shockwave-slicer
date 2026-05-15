@@ -2661,6 +2661,7 @@ name = "shockwave-gui"
 version = "0.1.0"
 dependencies = [
  "iced",
+ "shockwave-config",
 ]
 
 [[package]]

@@ -5,3 +5,4 @@ edition.workspace = true
 
 [dependencies]
 iced = "0.14.0"
+shockwave-config = { path = "../shockwave-config" }
