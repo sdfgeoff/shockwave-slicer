@@ -5,7 +5,7 @@
     "wall_count": 6,
     "extrusion_width_mm": 0.45,
     "infill_percentage": 11.25,
-    "global_z_offset_mm": 0.0
+    "global_z_offset_mm": -0.08
   },
   "printer": {
     "print_volume_mm": {
@@ -33,8 +33,8 @@
     },
     "method": "trapezoid",
     "anisotropic_rate": {
-      "x": 3.7,
-      "y": 3.7,
+      "x": 1.0,
+      "y": 1.0,
       "z": 1.0
     },
     "kernel_path": null

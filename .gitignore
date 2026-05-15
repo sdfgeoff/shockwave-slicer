@@ -2,3 +2,4 @@ target
 outputs
 *.pyc
 **/__pycache__
+tickets
