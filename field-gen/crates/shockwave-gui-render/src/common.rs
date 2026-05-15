@@ -1,16 +1,28 @@
 use std::hash::{Hash, Hasher};
 
-use iced::Point;
-use iced_wgpu::wgpu;
 use shockwave_config::Dimensions3;
 use shockwave_math::geometry::Vec3;
 
 pub const PREVIEW_HEIGHT: f32 = 280.0;
 pub const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ViewportSize {
+    pub width: u32,
+    pub height: u32,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ScissorRect {
+    pub x: u32,
+    pub y: u32,
+    pub width: u32,
+    pub height: u32,
+}
+
 #[repr(C)]
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
-pub struct Vertex3D {
+pub(crate) struct Vertex3D {
     pub position: [f32; 3],
     pub color: [f32; 3],
 }
@@ -39,22 +51,22 @@ impl Vertex3D {
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
-pub struct TransformUniform {
+pub(crate) struct TransformUniform {
     pub matrix: [[f32; 4]; 4],
 }
 
 impl TransformUniform {
     pub fn from_bounds(bounds: Bounds3) -> Self {
         let projected = bounds.projected_corners();
-        let mut min_x = projected[0].x;
-        let mut max_x = projected[0].x;
-        let mut min_y = projected[0].y;
-        let mut max_y = projected[0].y;
+        let mut min_x = projected[0].0;
+        let mut max_x = projected[0].0;
+        let mut min_y = projected[0].1;
+        let mut max_y = projected[0].1;
         for point in projected.iter().skip(1) {
-            min_x = min_x.min(point.x);
-            max_x = max_x.max(point.x);
-            min_y = min_y.min(point.y);
-            max_y = max_y.max(point.y);
+            min_x = min_x.min(point.0);
+            max_x = max_x.max(point.0);
+            min_y = min_y.min(point.1);
+            max_y = max_y.max(point.1);
         }
 
         let width = (max_x - min_x).max(1.0);
@@ -76,7 +88,7 @@ impl TransformUniform {
 }
 
 #[derive(Clone, Copy, Debug)]
-pub struct Bounds3 {
+pub(crate) struct Bounds3 {
     pub min: Vec3,
     pub max: Vec3,
 }
@@ -102,7 +114,7 @@ impl Bounds3 {
         self.max = self.max.max(point);
     }
 
-    fn projected_corners(self) -> [Point; 8] {
+    fn projected_corners(self) -> [(f32, f32); 8] {
         self.corners().map(project_iso)
     }
 
@@ -152,7 +164,7 @@ impl Bounds3 {
     }
 }
 
-pub fn bed_corners(print_volume: Dimensions3) -> [Vec3; 4] {
+pub(crate) fn bed_corners(print_volume: Dimensions3) -> [Vec3; 4] {
     [
         Vec3 {
             x: 0.0,
@@ -177,15 +189,15 @@ pub fn bed_corners(print_volume: Dimensions3) -> [Vec3; 4] {
     ]
 }
 
-pub fn data_signature(bytes: &[u8], count: usize) -> u64 {
+pub(crate) fn data_signature(bytes: &[u8], count: usize) -> u64 {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     count.hash(&mut hasher);
     bytes.hash(&mut hasher);
     hasher.finish()
 }
 
-fn project_iso(point: Vec3) -> Point {
-    Point::new(
+fn project_iso(point: Vec3) -> (f32, f32) {
+    (
         ((point.x - point.y) * 0.707) as f32,
         ((point.x + point.y) * 0.35 - point.z * 0.9) as f32,
     )

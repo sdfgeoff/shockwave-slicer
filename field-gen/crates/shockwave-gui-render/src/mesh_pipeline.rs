@@ -1,8 +1,7 @@
-use iced_wgpu::wgpu;
-use iced_wgpu::wgpu::util::DeviceExt;
+use wgpu::util::DeviceExt;
 
-use crate::gpu_common::{DEPTH_FORMAT, TransformUniform, Vertex3D};
-use crate::gpu_preview::ModelPreviewGeometry;
+use crate::common::{DEPTH_FORMAT, TransformUniform, Vertex3D};
+use crate::geometry::ModelPreviewGeometry;
 
 #[derive(Debug)]
 pub(crate) struct MeshPipeline {
@@ -15,15 +14,15 @@ pub(crate) struct MeshPipeline {
     signature: Option<u64>,
 }
 
-impl iced_wgpu::primitive::Pipeline for MeshPipeline {
-    fn new(device: &wgpu::Device, _queue: &wgpu::Queue, format: wgpu::TextureFormat) -> Self {
+impl MeshPipeline {
+    pub(crate) fn new(device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("shockwave-gui.gpu-mesh-preview.shader"),
+            label: Some("shockwave-gui-render.mesh-preview.shader"),
             source: wgpu::ShaderSource::Wgsl(include_str!("shaders/mesh_preview.wgsl").into()),
         });
         let uniform_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("shockwave-gui.gpu-mesh-preview.uniform-layout"),
+                label: Some("shockwave-gui-render.mesh-preview.uniform-layout"),
                 entries: &[wgpu::BindGroupLayoutEntry {
                     binding: 0,
                     visibility: wgpu::ShaderStages::VERTEX,
@@ -36,12 +35,12 @@ impl iced_wgpu::primitive::Pipeline for MeshPipeline {
                 }],
             });
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("shockwave-gui.gpu-mesh-preview.pipeline-layout"),
+            label: Some("shockwave-gui-render.mesh-preview.pipeline-layout"),
             bind_group_layouts: &[&uniform_bind_group_layout],
             push_constant_ranges: &[],
         });
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("shockwave-gui.gpu-mesh-preview.pipeline"),
+            label: Some("shockwave-gui-render.mesh-preview.pipeline"),
             layout: Some(&layout),
             vertex: wgpu::VertexState {
                 module: &shader,
@@ -87,9 +86,7 @@ impl iced_wgpu::primitive::Pipeline for MeshPipeline {
             signature: None,
         }
     }
-}
 
-impl MeshPipeline {
     pub(crate) fn prepare(
         &mut self,
         device: &wgpu::Device,
@@ -103,47 +100,19 @@ impl MeshPipeline {
 
         self.vertex_buffer = Some(
             device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("shockwave-gui.gpu-mesh-preview.vertices"),
+                label: Some("shockwave-gui-render.mesh-preview.vertices"),
                 contents: bytemuck::cast_slice(&geometry.vertices),
                 usage: wgpu::BufferUsages::VERTEX,
             }),
         );
         self.index_buffer = Some(
             device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("shockwave-gui.gpu-mesh-preview.indices"),
+                label: Some("shockwave-gui-render.mesh-preview.indices"),
                 contents: bytemuck::cast_slice(&geometry.indices),
                 usage: wgpu::BufferUsages::INDEX,
             }),
         );
         self.signature = Some(geometry.signature);
-    }
-
-    fn prepare_uniform(
-        &mut self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        transform: TransformUniform,
-    ) {
-        if let Some(buffer) = &self.uniform_buffer {
-            queue.write_buffer(buffer, 0, bytemuck::bytes_of(&transform));
-            return;
-        }
-
-        let buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("shockwave-gui.gpu-mesh-preview.uniform"),
-            contents: bytemuck::bytes_of(&transform),
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-        });
-        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("shockwave-gui.gpu-mesh-preview.uniform-bind-group"),
-            layout: &self.uniform_bind_group_layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: buffer.as_entire_binding(),
-            }],
-        });
-        self.uniform_buffer = Some(buffer);
-        self.uniform_bind_group = Some(bind_group);
     }
 
     pub(crate) fn draw(&self, render_pass: &mut wgpu::RenderPass<'_>, index_count: u32) {
@@ -163,5 +132,33 @@ impl MeshPipeline {
         render_pass.set_vertex_buffer(0, vertex_buffer.slice(..));
         render_pass.set_index_buffer(index_buffer.slice(..), wgpu::IndexFormat::Uint32);
         render_pass.draw_indexed(0..index_count, 0, 0..1);
+    }
+
+    fn prepare_uniform(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        transform: TransformUniform,
+    ) {
+        if let Some(buffer) = &self.uniform_buffer {
+            queue.write_buffer(buffer, 0, bytemuck::bytes_of(&transform));
+            return;
+        }
+
+        let buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("shockwave-gui-render.mesh-preview.uniform"),
+            contents: bytemuck::bytes_of(&transform),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("shockwave-gui-render.mesh-preview.uniform-bind-group"),
+            layout: &self.uniform_bind_group_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: buffer.as_entire_binding(),
+            }],
+        });
+        self.uniform_buffer = Some(buffer);
+        self.uniform_bind_group = Some(bind_group);
     }
 }

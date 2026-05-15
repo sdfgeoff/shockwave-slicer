@@ -7,6 +7,7 @@ members = [
     "crates/shockwave-math",
     "crates/shockwave-gcode",
     "crates/shockwave-geodesic",
+    "crates/shockwave-gui-render",
     "crates/shockwave-iso",
     "crates/shockwave-mesh",
     "crates/shockwave-output",

@@ -2696,16 +2696,27 @@ dependencies = [
 name = "shockwave-gui"
 version = "0.1.0"
 dependencies = [
- "bytemuck",
  "iced",
  "iced_wgpu",
  "rfd",
  "shockwave-config",
- "shockwave-math",
+ "shockwave-gui-render",
  "shockwave-mesh",
  "shockwave-path",
  "shockwave-slicer",
  "shockwave-slicer-io",
+]
+
+[[package]]
+name = "shockwave-gui-render"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "shockwave-config",
+ "shockwave-math",
+ "shockwave-mesh",
+ "shockwave-path",
+ "wgpu",
 ]
 
 [[package]]

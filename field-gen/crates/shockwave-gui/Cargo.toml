@@ -4,12 +4,11 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
-bytemuck = { version = "1.25.0", features = ["derive"] }
 iced = { version = "0.14.0", features = ["advanced", "tokio"] }
 iced_wgpu = "0.14.0"
 rfd = "0.17.2"
 shockwave-config = { path = "../shockwave-config" }
-shockwave-math = { path = "../shockwave-math" }
+shockwave-gui-render = { path = "../shockwave-gui-render" }
 shockwave-mesh = { path = "../shockwave-mesh" }
 shockwave-path = { path = "../shockwave-path" }
 shockwave-slicer = { path = "../shockwave-slicer" }

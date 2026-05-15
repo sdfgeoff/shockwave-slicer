@@ -1,0 +1,12 @@
+[package]
+name = "shockwave-gui-render"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+bytemuck = { version = "1.25.0", features = ["derive"] }
+shockwave-config = { path = "../shockwave-config" }
+shockwave-math = { path = "../shockwave-math" }
+shockwave-mesh = { path = "../shockwave-mesh" }
+shockwave-path = { path = "../shockwave-path" }
+wgpu = "27.0.1"
