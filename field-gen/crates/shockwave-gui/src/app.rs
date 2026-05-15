@@ -3,12 +3,14 @@ use std::sync::mpsc::{self, Receiver};
 use std::thread;
 use std::time::Duration;
 
-use iced::widget::{button, column, container, progress_bar, row, text};
+use iced::widget::{button, column, container, progress_bar, row, scrollable, text};
 use iced::{Element, Fill, Subscription, Theme, time};
 use rfd::FileDialog;
 use shockwave_config::{SlicerSettings, load_settings_or_default, save_settings, settings_path};
 use shockwave_slicer::{CancellationToken, SliceProgress};
 use shockwave_slicer_io::{SliceDebugOutput, SliceJobOutput, SliceJobRequest, run_slice_job};
+
+use crate::settings_form::{SettingsForm, SettingsMessage};
 
 pub fn run() -> iced::Result {
     iced::application(ShockwaveGui::new, update, view)
@@ -21,6 +23,7 @@ pub fn run() -> iced::Result {
 #[derive(Debug)]
 struct ShockwaveGui {
     settings: SlicerSettings,
+    settings_form: SettingsForm,
     settings_path: Option<PathBuf>,
     input_path: Option<PathBuf>,
     output_prefix: Option<PathBuf>,
@@ -45,6 +48,7 @@ impl ShockwaveGui {
     fn new() -> Self {
         let mut app = Self {
             settings: SlicerSettings::default(),
+            settings_form: SettingsForm::from_settings(&SlicerSettings::default()),
             settings_path: None,
             input_path: None,
             output_prefix: None,
@@ -62,6 +66,7 @@ impl ShockwaveGui {
                 match load_settings_or_default(&path) {
                     Ok(settings) => {
                         self.settings = settings;
+                        self.settings_form = SettingsForm::from_settings(&self.settings);
                         self.settings_path = Some(path.clone());
                         self.status = if existed {
                             format!("Loaded settings from {}", path.display())
@@ -86,6 +91,10 @@ impl ShockwaveGui {
             self.status = "No settings path is available".to_string();
             return;
         };
+        if let Err(errors) = self.settings_form.apply_to_settings(&mut self.settings) {
+            self.status = format!("Invalid settings: {}", errors.join("; "));
+            return;
+        }
 
         match save_settings(path, &self.settings) {
             Ok(()) => {
@@ -146,6 +155,10 @@ impl ShockwaveGui {
             self.status = "Select an output path before slicing".to_string();
             return;
         };
+        if let Err(errors) = self.settings_form.apply_to_settings(&mut self.settings) {
+            self.status = format!("Invalid settings: {}", errors.join("; "));
+            return;
+        }
         if let Err(errors) = self.settings.validate() {
             self.status = format!("Invalid settings: {}", errors.join("; "));
             return;
@@ -238,6 +251,7 @@ enum Message {
     Slice,
     CancelSlice,
     PollSlice,
+    Settings(SettingsMessage),
 }
 
 fn update(state: &mut ShockwaveGui, message: Message) {
@@ -248,6 +262,9 @@ fn update(state: &mut ShockwaveGui, message: Message) {
         Message::Slice => state.start_slice(),
         Message::CancelSlice => state.cancel_slice(),
         Message::PollSlice => state.poll_slice_events(),
+        Message::Settings(message) => {
+            state.settings_form.update(message);
+        }
     }
 }
 
@@ -274,49 +291,51 @@ fn view(state: &ShockwaveGui) -> Element<'_, Message> {
         .map(|path| path.display().to_string())
         .unwrap_or_else(|| "No output selected".to_string());
 
-    container(
-        column![
-            text("Shockwave Slicer").size(32),
-            text(&state.status).size(16),
-            row![text("Settings path:"), text(settings_path)].spacing(8),
-            row![
-                button("Select STL").on_press(Message::SelectStl),
-                text(input_path)
-            ]
-            .spacing(12),
-            row![
-                button("Save/Export to").on_press(Message::SelectOutput),
-                text(gcode_path)
-            ]
-            .spacing(12),
-            row![
-                button("Slice").on_press_maybe(state.can_slice().then_some(Message::Slice)),
-                button("Cancel")
-                    .on_press_maybe(state.slice_job.is_some().then_some(Message::CancelSlice)),
-            ]
-            .spacing(12),
-            slice_progress_view(state),
-            row![
-                text(format!(
-                    "Layer height: {:.3} mm",
-                    state.settings.slicing.layer_height_mm
-                )),
-                text(format!(
-                    "Voxel: {:.3} x {:.3} x {:.3} mm",
-                    state.settings.field.voxel_size_mm.x,
-                    state.settings.field.voxel_size_mm.y,
-                    state.settings.field.voxel_size_mm.z
-                )),
-            ]
-            .spacing(16),
-            button("Save settings").on_press(Message::SaveSettings),
+    let content = column![
+        text("Shockwave Slicer").size(32),
+        text(&state.status).size(16),
+        row![text("Settings path:"), text(settings_path)].spacing(8),
+        row![
+            button("Select STL").on_press(Message::SelectStl),
+            text(input_path)
         ]
         .spacing(12),
-    )
-    .width(Fill)
-    .height(Fill)
-    .center(Fill)
-    .into()
+        row![
+            button("Save/Export to").on_press(Message::SelectOutput),
+            text(gcode_path)
+        ]
+        .spacing(12),
+        row![
+            button("Slice").on_press_maybe(state.can_slice().then_some(Message::Slice)),
+            button("Cancel")
+                .on_press_maybe(state.slice_job.is_some().then_some(Message::CancelSlice)),
+        ]
+        .spacing(12),
+        slice_progress_view(state),
+        row![
+            text(format!(
+                "Layer height: {:.3} mm",
+                state.settings.slicing.layer_height_mm
+            )),
+            text(format!(
+                "Voxel: {:.3} x {:.3} x {:.3} mm",
+                state.settings.field.voxel_size_mm.x,
+                state.settings.field.voxel_size_mm.y,
+                state.settings.field.voxel_size_mm.z
+            )),
+        ]
+        .spacing(16),
+        text("Settings").size(24),
+        state.settings_form.view().map(Message::Settings),
+        button("Save settings").on_press(Message::SaveSettings),
+    ]
+    .spacing(12);
+
+    container(scrollable(content))
+        .width(Fill)
+        .height(Fill)
+        .center(Fill)
+        .into()
 }
 
 fn theme(_state: &ShockwaveGui) -> Theme {
