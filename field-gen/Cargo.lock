@@ -2759,6 +2759,7 @@ dependencies = [
  "iced",
  "rfd",
  "shockwave-config",
+ "shockwave-math",
  "shockwave-slicer",
  "shockwave-slicer-io",
 ]

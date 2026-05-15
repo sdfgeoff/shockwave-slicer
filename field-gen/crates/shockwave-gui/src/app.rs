@@ -7,8 +7,11 @@ use iced::widget::{button, column, container, progress_bar, row, scrollable, tex
 use iced::{Element, Fill, Subscription, Theme, time};
 use rfd::FileDialog;
 use shockwave_config::{SlicerSettings, load_settings_or_default, save_settings, settings_path};
+use shockwave_math::geometry::Triangle;
 use shockwave_slicer::{CancellationToken, SliceProgress};
-use shockwave_slicer_io::{SliceDebugOutput, SliceJobOutput, SliceJobRequest, run_slice_job};
+use shockwave_slicer_io::{
+    SliceDebugOutput, SliceJobOutput, SliceJobRequest, load_stl_model, run_slice_job,
+};
 
 use crate::preview_canvas;
 use crate::settings_form::{SettingsForm, SettingsMessage};
@@ -28,6 +31,7 @@ struct ShockwaveGui {
     settings_path: Option<PathBuf>,
     input_path: Option<PathBuf>,
     output_prefix: Option<PathBuf>,
+    preview_triangles: Vec<Triangle>,
     slice_job: Option<SliceJobState>,
     status: String,
 }
@@ -53,6 +57,7 @@ impl ShockwaveGui {
             settings_path: None,
             input_path: None,
             output_prefix: None,
+            preview_triangles: Vec::new(),
             slice_job: None,
             status: "Loading settings".to_string(),
         };
@@ -116,8 +121,22 @@ impl ShockwaveGui {
             if self.output_prefix.is_none() {
                 self.output_prefix = Some(path.with_extension(""));
             }
-            self.status = format!("Selected STL {}", path.display());
-            self.input_path = Some(path);
+            match load_stl_model(&path) {
+                Ok(triangles) => {
+                    self.status = format!(
+                        "Selected STL {} ({} triangles)",
+                        path.display(),
+                        triangles.len()
+                    );
+                    self.preview_triangles = triangles;
+                    self.input_path = Some(path);
+                }
+                Err(error) => {
+                    self.status = error;
+                    self.preview_triangles.clear();
+                    self.input_path = Some(path);
+                }
+            }
         }
     }
 
@@ -327,7 +346,10 @@ fn view(state: &ShockwaveGui) -> Element<'_, Message> {
         ]
         .spacing(16),
         text("Preview").size(24),
-        preview_canvas::test_triangle_view(),
+        preview_canvas::model_view(
+            &state.preview_triangles,
+            state.settings.printer.print_volume_mm
+        ),
         text("Settings").size(24),
         state.settings_form.view().map(Message::Settings),
         button("Save settings").on_press(Message::SaveSettings),
