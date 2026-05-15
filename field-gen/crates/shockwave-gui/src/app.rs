@@ -15,7 +15,7 @@ use shockwave_slicer_io::{
 };
 
 use crate::settings_form::{SettingsForm, SettingsMessage};
-use crate::{gpu_preview, gpu_toolpath_preview, preview_canvas};
+use crate::{gpu_preview, gpu_toolpath_preview};
 
 pub fn run() -> iced::Result {
     iced::application(ShockwaveGui::new, update, view)
@@ -351,12 +351,6 @@ fn view(state: &ShockwaveGui) -> Element<'_, Message> {
             )),
         ]
         .spacing(16),
-        text("Preview").size(24),
-        preview_canvas::scene_view(
-            &state.preview_triangles,
-            &state.preview_layers,
-            state.settings.printer.print_volume_mm
-        ),
         text("GPU STL Preview").size(24),
         gpu_preview::scene_view(
             &state.preview_triangles,
