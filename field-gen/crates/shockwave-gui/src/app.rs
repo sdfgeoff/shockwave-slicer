@@ -16,7 +16,7 @@ use shockwave_slicer_io::{
 };
 
 use crate::settings_form::{SettingsForm, SettingsMessage};
-use crate::{gpu_preview, gpu_toolpath_preview};
+use crate::gpu_scene_preview;
 
 pub fn run() -> iced::Result {
     iced::application(ShockwaveGui::new, update, view)
@@ -35,8 +35,7 @@ struct ShockwaveGui {
     output_prefix: Option<PathBuf>,
     preview_mesh: Mesh,
     preview_layers: Vec<LayerToolpaths>,
-    model_preview: Arc<gpu_preview::ModelPreviewGeometry>,
-    toolpath_preview: Arc<gpu_toolpath_preview::ToolpathPreviewGeometry>,
+    scene_preview: Arc<gpu_scene_preview::ScenePreviewGeometry>,
     slice_job: Option<SliceJobState>,
     status: String,
 }
@@ -64,8 +63,7 @@ impl ShockwaveGui {
             output_prefix: None,
             preview_mesh: Mesh::default(),
             preview_layers: Vec::new(),
-            model_preview: Arc::new(gpu_preview::ModelPreviewGeometry::default()),
-            toolpath_preview: Arc::new(gpu_toolpath_preview::ToolpathPreviewGeometry::default()),
+            scene_preview: Arc::new(gpu_scene_preview::ScenePreviewGeometry::default()),
             slice_job: None,
             status: "Loading settings".to_string(),
         };
@@ -269,7 +267,7 @@ impl ShockwaveGui {
                     self.status =
                         format!("Slice complete: wrote {}", output.paths.metadata.display());
                     self.preview_layers = output.layers;
-                    self.refresh_toolpath_preview();
+                    self.refresh_preview_geometry();
                 }
                 Err(error) => {
                     self.status = error;
@@ -279,19 +277,13 @@ impl ShockwaveGui {
     }
 
     fn refresh_preview_geometry(&mut self) {
-        self.model_preview = Arc::new(gpu_preview::ModelPreviewGeometry::from_scene(
-            &self.preview_mesh,
-            self.settings.printer.print_volume_mm,
-        ));
-        self.refresh_toolpath_preview();
-    }
-
-    fn refresh_toolpath_preview(&mut self) {
-        self.toolpath_preview =
-            Arc::new(gpu_toolpath_preview::ToolpathPreviewGeometry::from_scene(
+        self.scene_preview = Arc::new(
+            gpu_scene_preview::ScenePreviewGeometry::from_scene(
+                &self.preview_mesh,
                 &self.preview_layers,
                 self.settings.printer.print_volume_mm,
-            ));
+            ),
+        );
     }
 }
 
@@ -377,10 +369,8 @@ fn view(state: &ShockwaveGui) -> Element<'_, Message> {
             )),
         ]
         .spacing(16),
-        text("GPU STL Preview").size(24),
-        gpu_preview::scene_view(Arc::clone(&state.model_preview)),
-        text("GPU G-code Preview").size(24),
-        gpu_toolpath_preview::scene_view(Arc::clone(&state.toolpath_preview)),
+        text("GPU Preview").size(24),
+        gpu_scene_preview::scene_view(Arc::clone(&state.scene_preview)),
         text("Settings").size(24),
         state.settings_form.view().map(Message::Settings),
         button("Save settings").on_press(Message::SaveSettings),

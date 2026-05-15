@@ -15,6 +15,7 @@ use crate::gpu_common::{
 };
 use crate::gpu_mesh_pipeline::MeshPipeline;
 
+#[allow(dead_code)]
 pub fn scene_view<Message: 'static>(
     geometry: Arc<ModelPreviewGeometry>,
 ) -> Element<'static, Message> {

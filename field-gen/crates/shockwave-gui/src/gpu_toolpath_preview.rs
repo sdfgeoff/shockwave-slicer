@@ -15,6 +15,7 @@ use crate::gpu_common::{
     Bounds3, PREVIEW_HEIGHT, TransformUniform, Vertex3D, bed_corners, data_signature,
 };
 
+#[allow(dead_code)]
 pub fn scene_view<Message: 'static>(
     geometry: Arc<ToolpathPreviewGeometry>,
 ) -> Element<'static, Message> {
@@ -55,7 +56,7 @@ impl ToolpathPreviewGeometry {
         }
     }
 
-    fn vertex_count(&self) -> u32 {
+    pub(crate) fn vertex_count(&self) -> u32 {
         self.vertices.len() as u32
     }
 }
@@ -155,7 +156,7 @@ impl iced_wgpu::Primitive for ToolpathPrimitive {
 }
 
 #[derive(Debug)]
-struct ToolpathPipeline {
+pub(crate) struct ToolpathPipeline {
     pipeline: wgpu::RenderPipeline,
     uniform_bind_group_layout: wgpu::BindGroupLayout,
     vertex_buffer: Option<wgpu::Buffer>,
@@ -230,7 +231,7 @@ impl iced_wgpu::primitive::Pipeline for ToolpathPipeline {
 }
 
 impl ToolpathPipeline {
-    fn prepare(
+    pub(crate) fn prepare(
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
@@ -279,7 +280,7 @@ impl ToolpathPipeline {
         self.uniform_bind_group = Some(bind_group);
     }
 
-    fn draw(&self, render_pass: &mut wgpu::RenderPass<'_>, vertex_count: u32) {
+    pub(crate) fn draw(&self, render_pass: &mut wgpu::RenderPass<'_>, vertex_count: u32) {
         let (Some(vertex_buffer), Some(bind_group)) = (
             self.vertex_buffer.as_ref(),
             self.uniform_bind_group.as_ref(),

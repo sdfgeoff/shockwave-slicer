@@ -173,6 +173,18 @@ impl MeshPipeline {
             clip_bounds.width,
             clip_bounds.height,
         );
+        self.draw(&mut render_pass, vertex_buffer, index_buffer, bind_group, index_count);
+    }
+
+    /// Draws the mesh into an existing render pass.
+    pub(crate) fn draw(
+        &self,
+        render_pass: &mut wgpu::RenderPass,
+        vertex_buffer: &wgpu::Buffer,
+        index_buffer: &wgpu::Buffer,
+        bind_group: &wgpu::BindGroup,
+        index_count: u32,
+    ) {
         render_pass.set_pipeline(&self.pipeline);
         render_pass.set_bind_group(0, bind_group, &[]);
         render_pass.set_vertex_buffer(0, vertex_buffer.slice(..));
@@ -234,5 +246,29 @@ impl MeshPipeline {
             depth_or_array_layers: 1,
         };
         self.ensure_depth_texture(device, extent);
+    }
+
+    // --- Accessors for use by combined scene preview ---
+
+    pub(crate) fn pipeline(&self) -> &wgpu::RenderPipeline {
+        &self.pipeline
+    }
+
+    pub(crate) fn vertex_buffer(&self) -> Option<&wgpu::Buffer> {
+        self.vertex_buffer.as_ref()
+    }
+
+    pub(crate) fn index_buffer(&self) -> Option<&wgpu::Buffer> {
+        self.index_buffer.as_ref()
+    }
+
+    pub(crate) fn uniform_bind_group(&self) -> Option<&wgpu::BindGroup> {
+        self.uniform_bind_group.as_ref()
+    }
+
+    /// Clears the depth texture to free resources (used when depth is managed externally).
+    pub(crate) fn clear_depth_texture(&mut self) {
+        self.depth_texture = None;
+        self.depth_size = None;
     }
 }
