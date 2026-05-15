@@ -13,7 +13,8 @@ pub(crate) struct MeshPipeline {
     index_buffer: Option<wgpu::Buffer>,
     uniform_buffer: Option<wgpu::Buffer>,
     uniform_bind_group: Option<wgpu::BindGroup>,
-    depth_texture: Option<DepthTexture>,
+    depth_texture: Option<wgpu::TextureView>,
+    depth_size: Option<wgpu::Extent3d>,
     signature: Option<u64>,
 }
 
@@ -87,6 +88,7 @@ impl iced_wgpu::primitive::Pipeline for MeshPipeline {
             uniform_buffer: None,
             uniform_bind_group: None,
             depth_texture: None,
+            depth_size: None,
             signature: None,
         }
     }
@@ -97,10 +99,11 @@ impl MeshPipeline {
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-        bounds: &Rectangle,
+        _bounds: &Rectangle,
+        viewport: &iced_wgpu::graphics::Viewport,
         geometry: &ModelPreviewGeometry,
     ) {
-        self.prepare_depth_texture(device, bounds);
+        self.prepare_depth_texture(device, viewport.physical_size());
         self.prepare_uniform(device, queue, geometry.transform);
         if self.signature == Some(geometry.signature) {
             return;
@@ -130,10 +133,7 @@ impl MeshPipeline {
         clip_bounds: &Rectangle<u32>,
         index_count: u32,
     ) {
-        if index_count == 0 {
-            return;
-        }
-        let (Some(vertex_buffer), Some(index_buffer), Some(bind_group), Some(depth_texture)) = (
+        let (Some(vertex_buffer), Some(index_buffer), Some(bind_group), Some(depth_view)) = (
             self.vertex_buffer.as_ref(),
             self.index_buffer.as_ref(),
             self.uniform_bind_group.as_ref(),
@@ -141,6 +141,9 @@ impl MeshPipeline {
         ) else {
             return;
         };
+        if index_count == 0 {
+            return;
+        }
 
         let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("shockwave-gui.gpu-mesh-preview.pass"),
@@ -154,7 +157,7 @@ impl MeshPipeline {
                 },
             })],
             depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                view: &depth_texture.view,
+                view: depth_view,
                 depth_ops: Some(wgpu::Operations {
                     load: wgpu::LoadOp::Clear(1.0),
                     store: wgpu::StoreOp::Discard,
@@ -205,17 +208,8 @@ impl MeshPipeline {
         self.uniform_bind_group = Some(bind_group);
     }
 
-    fn prepare_depth_texture(&mut self, device: &wgpu::Device, bounds: &Rectangle) {
-        let size = wgpu::Extent3d {
-            width: bounds.width.max(1.0).ceil() as u32,
-            height: bounds.height.max(1.0).ceil() as u32,
-            depth_or_array_layers: 1,
-        };
-        if self
-            .depth_texture
-            .as_ref()
-            .is_some_and(|texture| texture.size == size)
-        {
+    fn ensure_depth_texture(&mut self, device: &wgpu::Device, size: wgpu::Extent3d) {
+        if self.depth_size == Some(size) {
             return;
         }
 
@@ -229,15 +223,16 @@ impl MeshPipeline {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             view_formats: &[],
         });
-        self.depth_texture = Some(DepthTexture {
-            view: texture.create_view(&wgpu::TextureViewDescriptor::default()),
-            size,
-        });
+        self.depth_texture = Some(texture.create_view(&wgpu::TextureViewDescriptor::default()));
+        self.depth_size = Some(size);
     }
-}
 
-#[derive(Debug)]
-struct DepthTexture {
-    view: wgpu::TextureView,
-    size: wgpu::Extent3d,
+    fn prepare_depth_texture(&mut self, device: &wgpu::Device, size: iced::Size<u32>) {
+        let extent = wgpu::Extent3d {
+            width: size.width.max(1),
+            height: size.height.max(1),
+            depth_or_array_layers: 1,
+        };
+        self.ensure_depth_texture(device, extent);
+    }
 }

@@ -142,9 +142,9 @@ impl iced_wgpu::Primitive for MeshPrimitive {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         bounds: &Rectangle,
-        _viewport: &iced_wgpu::graphics::Viewport,
+        viewport: &iced_wgpu::graphics::Viewport,
     ) {
-        pipeline.prepare(device, queue, bounds, &self.geometry);
+        pipeline.prepare(device, queue, bounds, viewport, &self.geometry);
     }
 
     fn render(
