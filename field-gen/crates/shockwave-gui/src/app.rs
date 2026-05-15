@@ -1,12 +1,18 @@
 use std::path::{Path, PathBuf};
+use std::sync::mpsc::{self, Receiver};
+use std::thread;
+use std::time::Duration;
 
-use iced::widget::{button, column, container, row, text};
-use iced::{Element, Fill, Theme};
+use iced::widget::{button, column, container, progress_bar, row, text};
+use iced::{Element, Fill, Subscription, Theme, time};
 use rfd::FileDialog;
 use shockwave_config::{SlicerSettings, load_settings_or_default, save_settings, settings_path};
+use shockwave_slicer::{CancellationToken, SliceProgress};
+use shockwave_slicer_io::{SliceDebugOutput, SliceJobOutput, SliceJobRequest, run_slice_job};
 
 pub fn run() -> iced::Result {
     iced::application(ShockwaveGui::new, update, view)
+        .subscription(subscription)
         .theme(theme)
         .centered()
         .run()
@@ -18,7 +24,21 @@ struct ShockwaveGui {
     settings_path: Option<PathBuf>,
     input_path: Option<PathBuf>,
     output_prefix: Option<PathBuf>,
+    slice_job: Option<SliceJobState>,
     status: String,
+}
+
+#[derive(Debug)]
+struct SliceJobState {
+    cancellation: CancellationToken,
+    receiver: Receiver<SliceJobEvent>,
+    progress: Option<SliceProgress>,
+}
+
+#[derive(Debug)]
+enum SliceJobEvent {
+    Progress(SliceProgress),
+    Finished(Result<SliceJobOutput, String>),
 }
 
 impl ShockwaveGui {
@@ -28,6 +48,7 @@ impl ShockwaveGui {
             settings_path: None,
             input_path: None,
             output_prefix: None,
+            slice_job: None,
             status: "Loading settings".to_string(),
         };
         app.load_settings();
@@ -113,7 +134,99 @@ impl ShockwaveGui {
     }
 
     fn can_slice(&self) -> bool {
-        self.input_path.is_some() && self.output_prefix.is_some()
+        self.input_path.is_some() && self.output_prefix.is_some() && self.slice_job.is_none()
+    }
+
+    fn start_slice(&mut self) {
+        let Some(input) = self.input_path.clone() else {
+            self.status = "Select an STL before slicing".to_string();
+            return;
+        };
+        let Some(output_prefix) = self.output_prefix.clone() else {
+            self.status = "Select an output path before slicing".to_string();
+            return;
+        };
+        if let Err(errors) = self.settings.validate() {
+            self.status = format!("Invalid settings: {}", errors.join("; "));
+            return;
+        }
+
+        let (sender, receiver) = mpsc::channel();
+        let cancellation = CancellationToken::default();
+        let worker_cancellation = cancellation.clone();
+        let settings = self.settings.clone();
+        let request = SliceJobRequest {
+            input,
+            output_prefix,
+            debug_output: SliceDebugOutput {
+                export_ply: settings.output.export_ply,
+                gcode: settings.output.gcode,
+            },
+            kernel_path: settings.field.kernel_path.clone(),
+        };
+
+        thread::spawn(move || {
+            let progress_sender = sender.clone();
+            let mut progress = move |event| {
+                let _ = progress_sender.send(SliceJobEvent::Progress(event));
+            };
+            let mut timing = ignore_timing;
+            let result = run_slice_job(
+                &request,
+                &settings,
+                &mut progress,
+                &mut timing,
+                &worker_cancellation,
+            );
+            let _ = sender.send(SliceJobEvent::Finished(result));
+        });
+
+        self.status = "Slicing started".to_string();
+        self.slice_job = Some(SliceJobState {
+            cancellation,
+            receiver,
+            progress: None,
+        });
+    }
+
+    fn cancel_slice(&mut self) {
+        if let Some(job) = &self.slice_job {
+            job.cancellation.cancel();
+            self.status = "Cancelling slice".to_string();
+        }
+    }
+
+    fn poll_slice_events(&mut self) {
+        let Some(job) = self.slice_job.as_mut() else {
+            return;
+        };
+
+        let mut finished = None;
+        while let Ok(event) = job.receiver.try_recv() {
+            match event {
+                SliceJobEvent::Progress(progress) => {
+                    self.status = progress.message.clone();
+                    job.progress = Some(progress);
+                }
+                SliceJobEvent::Finished(result) => {
+                    finished = Some(result);
+                    break;
+                }
+            }
+        }
+
+        if let Some(result) = finished {
+            self.slice_job = None;
+            match result {
+                Ok(output) => {
+                    self.status =
+                        format!("Slice complete: wrote {}", output.paths.metadata.display());
+                }
+                Err(error) => {
+                    self.status = error;
+                }
+            }
+        }
     }
 }
 
@@ -123,6 +236,8 @@ enum Message {
     SelectStl,
     SelectOutput,
     Slice,
+    CancelSlice,
+    PollSlice,
 }
 
 fn update(state: &mut ShockwaveGui, message: Message) {
@@ -130,9 +245,17 @@ fn update(state: &mut ShockwaveGui, message: Message) {
         Message::SaveSettings => state.save_settings(),
         Message::SelectStl => state.select_stl(),
         Message::SelectOutput => state.select_output(),
-        Message::Slice => {
-            state.status = "Slicing is not wired yet".to_string();
-        }
+        Message::Slice => state.start_slice(),
+        Message::CancelSlice => state.cancel_slice(),
+        Message::PollSlice => state.poll_slice_events(),
+    }
+}
+
+fn subscription(state: &ShockwaveGui) -> Subscription<Message> {
+    if state.slice_job.is_some() {
+        time::every(Duration::from_millis(100)).map(|_| Message::PollSlice)
+    } else {
+        Subscription::none()
     }
 }
 
@@ -166,7 +289,13 @@ fn view(state: &ShockwaveGui) -> Element<'_, Message> {
                 text(gcode_path)
             ]
             .spacing(12),
-            button("Slice").on_press_maybe(state.can_slice().then_some(Message::Slice)),
+            row![
+                button("Slice").on_press_maybe(state.can_slice().then_some(Message::Slice)),
+                button("Cancel")
+                    .on_press_maybe(state.slice_job.is_some().then_some(Message::CancelSlice)),
+            ]
+            .spacing(12),
+            slice_progress_view(state),
             row![
                 text(format!(
                     "Layer height: {:.3} mm",
@@ -194,6 +323,21 @@ fn theme(_state: &ShockwaveGui) -> Theme {
     Theme::TokyoNight
 }
 
+fn slice_progress_view(state: &ShockwaveGui) -> Element<'_, Message> {
+    let Some(job) = &state.slice_job else {
+        return text("No slice running").into();
+    };
+    let Some(progress) = &job.progress else {
+        return progress_bar(0.0..=1.0, 0.0).into();
+    };
+    column![
+        text(format!("{:?}: {}", progress.phase, progress.message)),
+        progress_bar(0.0..=1.0, progress.phase_progress.clamp(0.0, 1.0)),
+    ]
+    .spacing(6)
+    .into()
+}
+
 fn display_path(path: Option<&PathBuf>, fallback: &str) -> String {
     path.map(|path| path.display().to_string())
         .unwrap_or_else(|| fallback.to_string())
@@ -206,3 +350,5 @@ fn output_prefix_from_gcode_path(path: &Path) -> PathBuf {
         path.to_path_buf()
     }
 }
+
+fn ignore_timing(_: &str, _: Duration) {}
