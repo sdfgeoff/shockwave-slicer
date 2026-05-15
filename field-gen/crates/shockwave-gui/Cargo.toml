@@ -1,0 +1,7 @@
+[package]
+name = "shockwave-gui"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+iced = "0.14.0"
