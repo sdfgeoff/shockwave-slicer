@@ -1,4 +1,5 @@
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver};
 use std::thread;
 use std::time::Duration;
@@ -34,6 +35,8 @@ struct ShockwaveGui {
     output_prefix: Option<PathBuf>,
     preview_triangles: Vec<Triangle>,
     preview_layers: Vec<LayerToolpaths>,
+    model_preview: Arc<gpu_preview::ModelPreviewGeometry>,
+    toolpath_preview: Arc<gpu_toolpath_preview::ToolpathPreviewGeometry>,
     slice_job: Option<SliceJobState>,
     status: String,
 }
@@ -61,6 +64,8 @@ impl ShockwaveGui {
             output_prefix: None,
             preview_triangles: Vec::new(),
             preview_layers: Vec::new(),
+            model_preview: Arc::new(gpu_preview::ModelPreviewGeometry::default()),
+            toolpath_preview: Arc::new(gpu_toolpath_preview::ToolpathPreviewGeometry::default()),
             slice_job: None,
             status: "Loading settings".to_string(),
         };
@@ -96,7 +101,7 @@ impl ShockwaveGui {
     }
 
     fn save_settings(&mut self) {
-        let Some(path) = self.settings_path.as_ref() else {
+        let Some(path) = self.settings_path.clone() else {
             self.status = "No settings path is available".to_string();
             return;
         };
@@ -104,8 +109,9 @@ impl ShockwaveGui {
             self.status = format!("Invalid settings: {}", errors.join("; "));
             return;
         }
+        self.refresh_preview_geometry();
 
-        match save_settings(path, &self.settings) {
+        match save_settings(&path, &self.settings) {
             Ok(()) => {
                 self.status = format!("Saved settings to {}", path.display());
             }
@@ -133,12 +139,14 @@ impl ShockwaveGui {
                     );
                     self.preview_triangles = triangles;
                     self.preview_layers.clear();
+                    self.refresh_preview_geometry();
                     self.input_path = Some(path);
                 }
                 Err(error) => {
                     self.status = error;
                     self.preview_triangles.clear();
                     self.preview_layers.clear();
+                    self.refresh_preview_geometry();
                     self.input_path = Some(path);
                 }
             }
@@ -188,6 +196,7 @@ impl ShockwaveGui {
             self.status = format!("Invalid settings: {}", errors.join("; "));
             return;
         }
+        self.refresh_preview_geometry();
 
         let (sender, receiver) = mpsc::channel();
         let cancellation = CancellationToken::default();
@@ -260,12 +269,29 @@ impl ShockwaveGui {
                     self.status =
                         format!("Slice complete: wrote {}", output.paths.metadata.display());
                     self.preview_layers = output.layers;
+                    self.refresh_toolpath_preview();
                 }
                 Err(error) => {
                     self.status = error;
                 }
             }
         }
+    }
+
+    fn refresh_preview_geometry(&mut self) {
+        self.model_preview = Arc::new(gpu_preview::ModelPreviewGeometry::from_scene(
+            &self.preview_triangles,
+            self.settings.printer.print_volume_mm,
+        ));
+        self.refresh_toolpath_preview();
+    }
+
+    fn refresh_toolpath_preview(&mut self) {
+        self.toolpath_preview =
+            Arc::new(gpu_toolpath_preview::ToolpathPreviewGeometry::from_scene(
+                &self.preview_layers,
+                self.settings.printer.print_volume_mm,
+            ));
     }
 }
 
@@ -352,15 +378,9 @@ fn view(state: &ShockwaveGui) -> Element<'_, Message> {
         ]
         .spacing(16),
         text("GPU STL Preview").size(24),
-        gpu_preview::scene_view(
-            &state.preview_triangles,
-            state.settings.printer.print_volume_mm
-        ),
+        gpu_preview::scene_view(Arc::clone(&state.model_preview)),
         text("GPU G-code Preview").size(24),
-        gpu_toolpath_preview::scene_view(
-            &state.preview_layers,
-            state.settings.printer.print_volume_mm
-        ),
+        gpu_toolpath_preview::scene_view(Arc::clone(&state.toolpath_preview)),
         text("Settings").size(24),
         state.settings_form.view().map(Message::Settings),
         button("Save settings").on_press(Message::SaveSettings),

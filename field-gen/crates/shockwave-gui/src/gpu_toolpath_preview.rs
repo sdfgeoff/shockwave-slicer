@@ -1,37 +1,86 @@
-use std::hash::{Hash, Hasher};
+use std::sync::Arc;
 
 use iced::advanced::layout;
 use iced::advanced::renderer;
 use iced::advanced::widget::Tree;
 use iced::advanced::{Layout, Widget, mouse};
-use iced::{Element, Length, Point, Rectangle, Size, Theme};
+use iced::{Element, Length, Rectangle, Size, Theme};
 use iced_wgpu::wgpu;
 use iced_wgpu::wgpu::util::DeviceExt;
 use shockwave_config::Dimensions3;
 use shockwave_math::geometry::Vec3;
 use shockwave_path::{LayerToolpaths, ToolpathRole};
 
-pub fn scene_view<'a, Message: 'a>(
-    layers: &'a [LayerToolpaths],
-    print_volume: Dimensions3,
-) -> Element<'a, Message> {
+use crate::gpu_common::{
+    Bounds3, PREVIEW_HEIGHT, TransformUniform, Vertex3D, bed_corners, data_signature,
+};
+
+pub fn scene_view<Message: 'static>(
+    geometry: Arc<ToolpathPreviewGeometry>,
+) -> Element<'static, Message> {
     Element::new(GpuToolpathPreview {
-        layers,
-        print_volume,
+        geometry,
         width: Length::Fill,
-        height: Length::Fixed(280.0),
+        height: Length::Fixed(PREVIEW_HEIGHT),
     })
 }
 
+#[derive(Clone, Debug)]
+pub struct ToolpathPreviewGeometry {
+    vertices: Vec<Vertex3D>,
+    transform: TransformUniform,
+    signature: u64,
+}
+
+impl ToolpathPreviewGeometry {
+    pub fn from_scene(layers: &[LayerToolpaths], print_volume: Dimensions3) -> Self {
+        let mut bounds = Bounds3::from_print_volume(print_volume);
+        for layer in layers {
+            for path in &layer.paths {
+                for point in &path.points {
+                    bounds.include(point.position);
+                }
+            }
+        }
+
+        let mut vertices = Vec::new();
+        push_bed_outline(&mut vertices, print_volume);
+        push_toolpaths(&mut vertices, layers);
+
+        let signature = data_signature(bytemuck::cast_slice(&vertices), vertices.len());
+        Self {
+            vertices,
+            transform: TransformUniform::from_bounds(bounds),
+            signature,
+        }
+    }
+
+    fn vertex_count(&self) -> u32 {
+        self.vertices.len() as u32
+    }
+}
+
+impl Default for ToolpathPreviewGeometry {
+    fn default() -> Self {
+        Self::from_scene(
+            &[],
+            Dimensions3 {
+                x: 1.0,
+                y: 1.0,
+                z: 1.0,
+            },
+        )
+    }
+}
+
 #[derive(Debug)]
-struct GpuToolpathPreview<'a> {
-    layers: &'a [LayerToolpaths],
-    print_volume: Dimensions3,
+struct GpuToolpathPreview {
+    geometry: Arc<ToolpathPreviewGeometry>,
     width: Length,
     height: Length,
 }
 
-impl<Message, Renderer> Widget<Message, Theme, Renderer> for GpuToolpathPreview<'_>
+impl<Message, Renderer> Widget<Message, Theme, Renderer> for GpuToolpathPreview
 where
     Renderer: iced::advanced::Renderer + iced_wgpu::primitive::Renderer,
 {
@@ -63,50 +112,26 @@ where
     ) {
         renderer.draw_primitive(
             layout.bounds(),
-            ToolpathPrimitive::from_scene(self.layers, self.print_volume),
+            ToolpathPrimitive {
+                geometry: Arc::clone(&self.geometry),
+            },
         );
     }
 }
 
-impl<'a, Message, Renderer> From<GpuToolpathPreview<'a>> for Element<'a, Message, Theme, Renderer>
+impl<'a, Message, Renderer> From<GpuToolpathPreview> for Element<'a, Message, Theme, Renderer>
 where
     Message: 'a,
     Renderer: iced::advanced::Renderer + iced_wgpu::primitive::Renderer + 'a,
 {
-    fn from(value: GpuToolpathPreview<'a>) -> Self {
+    fn from(value: GpuToolpathPreview) -> Self {
         Element::new(value)
     }
 }
 
 #[derive(Debug)]
 struct ToolpathPrimitive {
-    vertices: Vec<Vertex>,
-    signature: u64,
-}
-
-impl ToolpathPrimitive {
-    fn from_scene(layers: &[LayerToolpaths], print_volume: Dimensions3) -> Self {
-        let mut projected = bed_corners(print_volume)
-            .iter()
-            .map(|point| project(*point))
-            .collect::<Vec<_>>();
-        for layer in layers {
-            for path in &layer.paths {
-                projected.extend(path.points.iter().map(|point| project(point.position)));
-            }
-        }
-        let transform = ViewTransform::fit(&projected);
-
-        let mut vertices = Vec::new();
-        push_bed_outline(&mut vertices, print_volume, transform);
-        push_toolpaths(&mut vertices, layers, transform);
-
-        let signature = vertex_signature(&vertices);
-        Self {
-            vertices,
-            signature,
-        }
-    }
+    geometry: Arc<ToolpathPreviewGeometry>,
 }
 
 impl iced_wgpu::Primitive for ToolpathPrimitive {
@@ -116,24 +141,15 @@ impl iced_wgpu::Primitive for ToolpathPrimitive {
         &self,
         pipeline: &mut Self::Pipeline,
         device: &wgpu::Device,
-        _queue: &wgpu::Queue,
+        queue: &wgpu::Queue,
         _bounds: &Rectangle,
         _viewport: &iced_wgpu::graphics::Viewport,
     ) {
-        pipeline.prepare(device, &self.vertices, self.signature);
+        pipeline.prepare(device, queue, &self.geometry);
     }
 
     fn draw(&self, pipeline: &Self::Pipeline, render_pass: &mut wgpu::RenderPass<'_>) -> bool {
-        let Some(vertex_buffer) = pipeline.vertex_buffer.as_ref() else {
-            return true;
-        };
-        if pipeline.vertex_count == 0 {
-            return true;
-        }
-
-        render_pass.set_pipeline(&pipeline.pipeline);
-        render_pass.set_vertex_buffer(0, vertex_buffer.slice(..));
-        render_pass.draw(0..pipeline.vertex_count, 0..1);
+        pipeline.draw(render_pass, self.geometry.vertex_count());
         true
     }
 }
@@ -141,8 +157,10 @@ impl iced_wgpu::Primitive for ToolpathPrimitive {
 #[derive(Debug)]
 struct ToolpathPipeline {
     pipeline: wgpu::RenderPipeline,
+    uniform_bind_group_layout: wgpu::BindGroupLayout,
     vertex_buffer: Option<wgpu::Buffer>,
-    vertex_count: u32,
+    uniform_buffer: Option<wgpu::Buffer>,
+    uniform_bind_group: Option<wgpu::BindGroup>,
     signature: Option<u64>,
 }
 
@@ -152,9 +170,23 @@ impl iced_wgpu::primitive::Pipeline for ToolpathPipeline {
             label: Some("shockwave-gui.gpu-toolpath-preview.shader"),
             source: wgpu::ShaderSource::Wgsl(TOOLPATH_SHADER.into()),
         });
+        let uniform_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("shockwave-gui.gpu-toolpath-preview.uniform-layout"),
+                entries: &[wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                }],
+            });
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("shockwave-gui.gpu-toolpath-preview.pipeline-layout"),
-            bind_group_layouts: &[],
+            bind_group_layouts: &[&uniform_bind_group_layout],
             push_constant_ranges: &[],
         });
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -163,7 +195,7 @@ impl iced_wgpu::primitive::Pipeline for ToolpathPipeline {
             vertex: wgpu::VertexState {
                 module: &shader,
                 entry_point: Some("vs_main"),
-                buffers: &[Vertex::layout()],
+                buffers: &[Vertex3D::layout()],
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
             },
             fragment: Some(wgpu::FragmentState {
@@ -181,142 +213,111 @@ impl iced_wgpu::primitive::Pipeline for ToolpathPipeline {
                 ..Default::default()
             },
             depth_stencil: None,
-            multisample: wgpu::MultisampleState {
-                count: 1,
-                mask: !0,
-                alpha_to_coverage_enabled: false,
-            },
+            multisample: wgpu::MultisampleState::default(),
             multiview: None,
             cache: None,
         });
 
         Self {
             pipeline,
+            uniform_bind_group_layout,
             vertex_buffer: None,
-            vertex_count: 0,
+            uniform_buffer: None,
+            uniform_bind_group: None,
             signature: None,
         }
     }
 }
 
 impl ToolpathPipeline {
-    fn prepare(&mut self, device: &wgpu::Device, vertices: &[Vertex], signature: u64) {
-        self.vertex_count = vertices.len() as u32;
-        if vertices.is_empty() {
-            self.vertex_buffer = None;
-            self.signature = None;
-            return;
-        }
-        if self.signature == Some(signature) {
+    fn prepare(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        geometry: &ToolpathPreviewGeometry,
+    ) {
+        self.prepare_uniform(device, queue, geometry.transform);
+        if self.signature == Some(geometry.signature) {
             return;
         }
 
         self.vertex_buffer = Some(
             device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("shockwave-gui.gpu-toolpath-preview.vertices"),
-                contents: bytemuck::cast_slice(vertices),
+                contents: bytemuck::cast_slice(&geometry.vertices),
                 usage: wgpu::BufferUsages::VERTEX,
             }),
         );
-        self.signature = Some(signature);
+        self.signature = Some(geometry.signature);
     }
-}
 
-#[repr(C)]
-#[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
-struct Vertex {
-    position: [f32; 2],
-    color: [f32; 3],
-}
-
-impl Vertex {
-    fn layout() -> wgpu::VertexBufferLayout<'static> {
-        const ATTRIBUTES: [wgpu::VertexAttribute; 2] = wgpu::vertex_attr_array![
-            0 => Float32x2,
-            1 => Float32x3,
-        ];
-
-        wgpu::VertexBufferLayout {
-            array_stride: std::mem::size_of::<Vertex>() as u64,
-            step_mode: wgpu::VertexStepMode::Vertex,
-            attributes: &ATTRIBUTES,
-        }
-    }
-}
-
-#[derive(Clone, Copy)]
-struct ViewTransform {
-    min_x: f32,
-    min_y: f32,
-    scale: f32,
-}
-
-impl ViewTransform {
-    fn fit(points: &[Point]) -> Self {
-        let (mut min_x, mut min_y) = (0.0, 0.0);
-        let (mut max_x, mut max_y) = (1.0, 1.0);
-        if let Some(first) = points.first() {
-            min_x = first.x;
-            max_x = first.x;
-            min_y = first.y;
-            max_y = first.y;
-            for point in points.iter().skip(1) {
-                min_x = min_x.min(point.x);
-                max_x = max_x.max(point.x);
-                min_y = min_y.min(point.y);
-                max_y = max_y.max(point.y);
-            }
+    fn prepare_uniform(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        transform: TransformUniform,
+    ) {
+        if let Some(buffer) = &self.uniform_buffer {
+            queue.write_buffer(buffer, 0, bytemuck::bytes_of(&transform));
+            return;
         }
 
-        let content_width = (max_x - min_x).max(1.0);
-        let content_height = (max_y - min_y).max(1.0);
-        Self {
-            min_x,
-            min_y,
-            scale: 1.72 / content_width.max(content_height),
-        }
+        let buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("shockwave-gui.gpu-toolpath-preview.uniform"),
+            contents: bytemuck::bytes_of(&transform),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("shockwave-gui.gpu-toolpath-preview.uniform-bind-group"),
+            layout: &self.uniform_bind_group_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: buffer.as_entire_binding(),
+            }],
+        });
+        self.uniform_buffer = Some(buffer);
+        self.uniform_bind_group = Some(bind_group);
     }
 
-    fn apply(self, point: Point) -> [f32; 2] {
-        [
-            -0.86 + (point.x - self.min_x) * self.scale,
-            0.86 - (point.y - self.min_y) * self.scale,
-        ]
+    fn draw(&self, render_pass: &mut wgpu::RenderPass<'_>, vertex_count: u32) {
+        let (Some(vertex_buffer), Some(bind_group)) = (
+            self.vertex_buffer.as_ref(),
+            self.uniform_bind_group.as_ref(),
+        ) else {
+            return;
+        };
+        if vertex_count == 0 {
+            return;
+        }
+
+        render_pass.set_pipeline(&self.pipeline);
+        render_pass.set_bind_group(0, bind_group, &[]);
+        render_pass.set_vertex_buffer(0, vertex_buffer.slice(..));
+        render_pass.draw(0..vertex_count, 0..1);
     }
 }
 
-fn push_bed_outline(
-    vertices: &mut Vec<Vertex>,
-    print_volume: Dimensions3,
-    transform: ViewTransform,
-) {
+fn push_bed_outline(vertices: &mut Vec<Vertex3D>, print_volume: Dimensions3) {
     let corners = bed_corners(print_volume);
     let color = [0.28, 0.36, 0.4];
-    push_line(vertices, corners[0], corners[1], transform, color);
-    push_line(vertices, corners[1], corners[2], transform, color);
-    push_line(vertices, corners[2], corners[3], transform, color);
-    push_line(vertices, corners[3], corners[0], transform, color);
+    push_line(vertices, corners[0], corners[1], color);
+    push_line(vertices, corners[1], corners[2], color);
+    push_line(vertices, corners[2], corners[3], color);
+    push_line(vertices, corners[3], corners[0], color);
 }
 
-fn push_toolpaths(vertices: &mut Vec<Vertex>, layers: &[LayerToolpaths], transform: ViewTransform) {
+fn push_toolpaths(vertices: &mut Vec<Vertex3D>, layers: &[LayerToolpaths]) {
     for layer in layers {
         for path in &layer.paths {
             let color = role_color(path.role);
             for segment in path.points.windows(2) {
-                push_line(
-                    vertices,
-                    segment[0].position,
-                    segment[1].position,
-                    transform,
-                    color,
-                );
+                push_line(vertices, segment[0].position, segment[1].position, color);
             }
             if path.closed && path.points.len() > 2 {
                 push_line(
                     vertices,
                     path.points.last().unwrap().position,
                     path.points[0].position,
-                    transform,
                     color,
                 );
             }
@@ -324,21 +325,9 @@ fn push_toolpaths(vertices: &mut Vec<Vertex>, layers: &[LayerToolpaths], transfo
     }
 }
 
-fn push_line(
-    vertices: &mut Vec<Vertex>,
-    start: Vec3,
-    end: Vec3,
-    transform: ViewTransform,
-    color: [f32; 3],
-) {
-    vertices.push(Vertex {
-        position: transform.apply(project(start)),
-        color,
-    });
-    vertices.push(Vertex {
-        position: transform.apply(project(end)),
-        color,
-    });
+fn push_line(vertices: &mut Vec<Vertex3D>, start: Vec3, end: Vec3, color: [f32; 3]) {
+    vertices.push(Vertex3D::new(start, color));
+    vertices.push(Vertex3D::new(end, color));
 }
 
 fn role_color(role: ToolpathRole) -> [f32; 3] {
@@ -349,48 +338,13 @@ fn role_color(role: ToolpathRole) -> [f32; 3] {
     }
 }
 
-fn bed_corners(print_volume: Dimensions3) -> [Vec3; 4] {
-    [
-        Vec3 {
-            x: 0.0,
-            y: 0.0,
-            z: 0.0,
-        },
-        Vec3 {
-            x: print_volume.x,
-            y: 0.0,
-            z: 0.0,
-        },
-        Vec3 {
-            x: print_volume.x,
-            y: print_volume.y,
-            z: 0.0,
-        },
-        Vec3 {
-            x: 0.0,
-            y: print_volume.y,
-            z: 0.0,
-        },
-    ]
-}
-
-fn project(point: Vec3) -> Point {
-    Point::new(
-        ((point.x - point.y) * 0.707) as f32,
-        ((point.x + point.y) * 0.35 - point.z * 0.9) as f32,
-    )
-}
-
-fn vertex_signature(vertices: &[Vertex]) -> u64 {
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    vertices.len().hash(&mut hasher);
-    bytemuck::cast_slice::<Vertex, u8>(vertices).hash(&mut hasher);
-    hasher.finish()
-}
-
 const TOOLPATH_SHADER: &str = r#"
+struct Transform {
+    matrix: mat4x4<f32>,
+};
+
 struct VertexInput {
-    @location(0) position: vec2<f32>,
+    @location(0) position: vec3<f32>,
     @location(1) color: vec3<f32>,
 };
 
@@ -399,10 +353,13 @@ struct VertexOutput {
     @location(0) color: vec3<f32>,
 };
 
+@group(0) @binding(0)
+var<uniform> transform: Transform;
+
 @vertex
 fn vs_main(input: VertexInput) -> VertexOutput {
     var output: VertexOutput;
-    output.position = vec4<f32>(input.position, 0.0, 1.0);
+    output.position = transform.matrix * vec4<f32>(input.position, 1.0);
     output.color = input.color;
     return output;
 }
@@ -432,7 +389,7 @@ mod tests {
                 closed: true,
             }],
         };
-        let preview = ToolpathPrimitive::from_scene(
+        let preview = ToolpathPreviewGeometry::from_scene(
             &[layer],
             Dimensions3 {
                 x: 100.0,
