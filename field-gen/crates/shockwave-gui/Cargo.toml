@@ -8,5 +8,6 @@ iced = { version = "0.14.0", features = ["canvas", "tokio"] }
 rfd = "0.17.2"
 shockwave-config = { path = "../shockwave-config" }
 shockwave-math = { path = "../shockwave-math" }
+shockwave-path = { path = "../shockwave-path" }
 shockwave-slicer = { path = "../shockwave-slicer" }
 shockwave-slicer-io = { path = "../shockwave-slicer-io" }

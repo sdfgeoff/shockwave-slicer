@@ -40,6 +40,7 @@ pub struct SliceJobOutput {
     pub occupied_count: usize,
     pub voxel_count: usize,
     pub triangle_count: usize,
+    pub layers: Vec<LayerToolpaths>,
 }
 
 pub fn run_slice_job(
@@ -93,7 +94,7 @@ pub fn run_slice_debug_outputs(
     timing("voxelize", voxelize_start.elapsed());
     check_cancelled(cancellation)?;
 
-    let paths = write_outputs(
+    let (paths, layers) = write_outputs(
         request,
         settings,
         triangles,
@@ -112,6 +113,7 @@ pub fn run_slice_debug_outputs(
         occupied_count,
         voxel_count: occupancy.len(),
         triangle_count: triangles.len(),
+        layers,
     })
 }
 
@@ -125,7 +127,7 @@ fn write_outputs(
     progress: &mut impl FnMut(SliceProgress),
     timing: &mut impl FnMut(&str, Duration),
     cancellation: &CancellationToken,
-) -> Result<SliceOutputPaths, String> {
+) -> Result<(SliceOutputPaths, Vec<LayerToolpaths>), String> {
     let bounds = mesh_bounds(triangles);
     let atlas = build_atlas(grid);
     let occupied_count = occupancy.iter().filter(|value| **value != 0).count();
@@ -136,6 +138,7 @@ fn write_outputs(
         request.debug_output.export_ply,
         request.debug_output.gcode,
     );
+    let mut layers = Vec::new();
 
     let occ_start = Instant::now();
     fs::write(&paths.volume, occupancy)
@@ -201,7 +204,7 @@ fn write_outputs(
             progress_event(progress, SlicePhase::GeneratePaths, 0.0, "generating paths");
             check_cancelled(cancellation)?;
             let path_start = Instant::now();
-            let layers = toolpaths_from_isosurfaces(&clipped_mesh, settings, field, grid)
+            layers = toolpaths_from_isosurfaces(&clipped_mesh, settings, field, grid)
                 .map_err(|error| error.to_string())?;
             timing("generate perimeter paths", path_start.elapsed());
             progress_event(progress, SlicePhase::GeneratePaths, 1.0, "generated paths");
@@ -250,7 +253,7 @@ fn write_outputs(
     .map_err(|error| format!("failed to write {}: {error}", paths.metadata.display()))?;
     timing("write metadata", metadata_start.elapsed());
 
-    Ok(paths)
+    Ok((paths, layers))
 }
 
 fn extract_isosurfaces_with_timing(

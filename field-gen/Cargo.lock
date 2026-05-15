@@ -2760,6 +2760,7 @@ dependencies = [
  "rfd",
  "shockwave-config",
  "shockwave-math",
+ "shockwave-path",
  "shockwave-slicer",
  "shockwave-slicer-io",
 ]

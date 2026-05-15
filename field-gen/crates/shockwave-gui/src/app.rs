@@ -8,6 +8,7 @@ use iced::{Element, Fill, Subscription, Theme, time};
 use rfd::FileDialog;
 use shockwave_config::{SlicerSettings, load_settings_or_default, save_settings, settings_path};
 use shockwave_math::geometry::Triangle;
+use shockwave_path::LayerToolpaths;
 use shockwave_slicer::{CancellationToken, SliceProgress};
 use shockwave_slicer_io::{
     SliceDebugOutput, SliceJobOutput, SliceJobRequest, load_stl_model, run_slice_job,
@@ -32,6 +33,7 @@ struct ShockwaveGui {
     input_path: Option<PathBuf>,
     output_prefix: Option<PathBuf>,
     preview_triangles: Vec<Triangle>,
+    preview_layers: Vec<LayerToolpaths>,
     slice_job: Option<SliceJobState>,
     status: String,
 }
@@ -58,6 +60,7 @@ impl ShockwaveGui {
             input_path: None,
             output_prefix: None,
             preview_triangles: Vec::new(),
+            preview_layers: Vec::new(),
             slice_job: None,
             status: "Loading settings".to_string(),
         };
@@ -129,11 +132,13 @@ impl ShockwaveGui {
                         triangles.len()
                     );
                     self.preview_triangles = triangles;
+                    self.preview_layers.clear();
                     self.input_path = Some(path);
                 }
                 Err(error) => {
                     self.status = error;
                     self.preview_triangles.clear();
+                    self.preview_layers.clear();
                     self.input_path = Some(path);
                 }
             }
@@ -254,6 +259,7 @@ impl ShockwaveGui {
                 Ok(output) => {
                     self.status =
                         format!("Slice complete: wrote {}", output.paths.metadata.display());
+                    self.preview_layers = output.layers;
                 }
                 Err(error) => {
                     self.status = error;
@@ -346,8 +352,9 @@ fn view(state: &ShockwaveGui) -> Element<'_, Message> {
         ]
         .spacing(16),
         text("Preview").size(24),
-        preview_canvas::model_view(
+        preview_canvas::scene_view(
             &state.preview_triangles,
+            &state.preview_layers,
             state.settings.printer.print_volume_mm
         ),
         text("Settings").size(24),

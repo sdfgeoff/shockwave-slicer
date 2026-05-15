@@ -3,13 +3,16 @@ use iced::widget::canvas;
 use iced::{Color, Element, Fill, Point, Rectangle, Renderer, Theme};
 use shockwave_config::Dimensions3;
 use shockwave_math::geometry::{Triangle, Vec3};
+use shockwave_path::{LayerToolpaths, ToolpathRole};
 
-pub fn model_view<'a, Message: 'a>(
+pub fn scene_view<'a, Message: 'a>(
     triangles: &'a [Triangle],
+    layers: &'a [LayerToolpaths],
     print_volume: Dimensions3,
 ) -> Element<'a, Message> {
     canvas(ModelPreview {
         triangles,
+        layers,
         print_volume,
     })
     .width(Fill)
@@ -20,6 +23,7 @@ pub fn model_view<'a, Message: 'a>(
 #[derive(Debug)]
 struct ModelPreview<'a> {
     triangles: &'a [Triangle],
+    layers: &'a [LayerToolpaths],
     print_volume: Dimensions3,
 }
 
@@ -46,10 +50,20 @@ impl<Message> canvas::Program<Message> for ModelPreview<'_> {
         for triangle in self.triangles {
             projected.extend(triangle.vertices.iter().map(|point| project(*point)));
         }
+        for layer in self.layers {
+            for path in &layer.paths {
+                projected.extend(path.points.iter().map(|point| project(point.position)));
+            }
+        }
         let transform = ViewTransform::fit(&projected, bounds);
 
         draw_bed(&mut frame, &bed, transform);
-        draw_model(&mut frame, self.triangles, transform);
+        if self.layers.is_empty() {
+            draw_model(&mut frame, self.triangles, transform);
+        } else {
+            draw_model(&mut frame, self.triangles, transform);
+            draw_toolpaths(&mut frame, self.layers, transform);
+        }
 
         vec![frame.into_geometry()]
     }
@@ -98,6 +112,40 @@ fn draw_model(frame: &mut canvas::Frame, triangles: &[Triangle], transform: View
                 .with_color(Color::from_rgba(0.01, 0.02, 0.04, 0.35))
                 .with_width(0.5),
         );
+    }
+}
+
+fn draw_toolpaths(frame: &mut canvas::Frame, layers: &[LayerToolpaths], transform: ViewTransform) {
+    for layer in layers {
+        for path in &layer.paths {
+            if path.points.len() < 2 {
+                continue;
+            }
+            let color = match path.role {
+                ToolpathRole::Perimeter => Color::from_rgb(0.05, 1.0, 0.35),
+                ToolpathRole::Infill => Color::from_rgb(1.0, 0.74, 0.18),
+                ToolpathRole::Travel => Color::from_rgba(0.7, 0.7, 0.75, 0.35),
+            };
+            let line = canvas::Path::new(|builder| {
+                builder.move_to(transform.apply(project(path.points[0].position)));
+                for point in path.points.iter().skip(1) {
+                    builder.line_to(transform.apply(project(point.position)));
+                }
+                if path.closed {
+                    builder.close();
+                }
+            });
+            frame.stroke(
+                &line,
+                canvas::Stroke::default().with_color(color).with_width(
+                    if path.role == ToolpathRole::Travel {
+                        0.7
+                    } else {
+                        1.3
+                    },
+                ),
+            );
+        }
     }
 }
 

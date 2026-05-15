@@ -199,6 +199,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(output.triangle_count, 12);
+        assert!(output.layers.is_empty());
         assert!(output.occupied_count > 0);
         assert!(output.paths.volume.exists());
         assert!(output.paths.image.exists());
