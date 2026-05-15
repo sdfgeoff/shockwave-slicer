@@ -14,8 +14,8 @@ use shockwave_slicer_io::{
     SliceDebugOutput, SliceJobOutput, SliceJobRequest, load_stl_model, run_slice_job,
 };
 
-use crate::preview_canvas;
 use crate::settings_form::{SettingsForm, SettingsMessage};
+use crate::{gpu_preview, preview_canvas};
 
 pub fn run() -> iced::Result {
     iced::application(ShockwaveGui::new, update, view)
@@ -357,6 +357,8 @@ fn view(state: &ShockwaveGui) -> Element<'_, Message> {
             &state.preview_layers,
             state.settings.printer.print_volume_mm
         ),
+        text("GPU Preview Spike").size(24),
+        gpu_preview::triangle_view(),
         text("Settings").size(24),
         state.settings_form.view().map(Message::Settings),
         button("Save settings").on_press(Message::SaveSettings),

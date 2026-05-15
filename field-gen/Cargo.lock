@@ -2756,7 +2756,9 @@ dependencies = [
 name = "shockwave-gui"
 version = "0.1.0"
 dependencies = [
+ "bytemuck",
  "iced",
+ "iced_wgpu",
  "rfd",
  "shockwave-config",
  "shockwave-math",

@@ -4,7 +4,9 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
-iced = { version = "0.14.0", features = ["canvas", "tokio"] }
+bytemuck = { version = "1.25.0", features = ["derive"] }
+iced = { version = "0.14.0", features = ["advanced", "canvas", "tokio"] }
+iced_wgpu = "0.14.0"
 rfd = "0.17.2"
 shockwave-config = { path = "../shockwave-config" }
 shockwave-math = { path = "../shockwave-math" }
