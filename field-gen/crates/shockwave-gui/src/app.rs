@@ -18,6 +18,9 @@ use shockwave_slicer_io::{
 use crate::gpu_scene_preview;
 use crate::settings_form::{SettingsForm, SettingsMessage};
 
+const CAMERA_DRAG_SENSITIVITY: f32 = 0.01;
+const MAX_CAMERA_PITCH_RADIANS: f32 = 89.0_f32.to_radians();
+
 pub fn run() -> iced::Result {
     iced::application(ShockwaveGui::new, update, view)
         .subscription(subscription)
@@ -298,12 +301,22 @@ impl ShockwaveGui {
     }
 
     fn rotate_camera(&mut self, drag: gpu_scene_preview::CameraDrag) {
-        const SENSITIVITY: f32 = 0.01;
-        self.camera_yaw_radians += drag.delta_x * SENSITIVITY;
-        self.camera_pitch_radians =
-            (self.camera_pitch_radians + drag.delta_y * SENSITIVITY).clamp(-1.45, 1.45);
+        (self.camera_yaw_radians, self.camera_pitch_radians) =
+            apply_camera_drag(self.camera_yaw_radians, self.camera_pitch_radians, drag);
         self.refresh_preview_geometry();
     }
+}
+
+fn apply_camera_drag(
+    yaw_radians: f32,
+    pitch_radians: f32,
+    drag: gpu_scene_preview::CameraDrag,
+) -> (f32, f32) {
+    (
+        yaw_radians + drag.delta_x * CAMERA_DRAG_SENSITIVITY,
+        (pitch_radians + drag.delta_y * CAMERA_DRAG_SENSITIVITY)
+            .clamp(-MAX_CAMERA_PITCH_RADIANS, MAX_CAMERA_PITCH_RADIANS),
+    )
 }
 
 #[derive(Clone, Debug)]
@@ -438,3 +451,44 @@ fn output_prefix_from_gcode_path(path: &Path) -> PathBuf {
 }
 
 fn ignore_timing(_: &str, _: Duration) {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn camera_pitch_accumulates_across_separate_drags() {
+        let (yaw, pitch) = apply_camera_drag(
+            0.0,
+            0.2,
+            gpu_scene_preview::CameraDrag {
+                delta_x: 0.0,
+                delta_y: 10.0,
+            },
+        );
+        let (_, pitch) = apply_camera_drag(
+            yaw,
+            pitch,
+            gpu_scene_preview::CameraDrag {
+                delta_x: 0.0,
+                delta_y: 10.0,
+            },
+        );
+
+        assert!((pitch - 0.4).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn camera_pitch_is_clamped_to_89_degrees() {
+        let (_, pitch) = apply_camera_drag(
+            0.0,
+            0.0,
+            gpu_scene_preview::CameraDrag {
+                delta_x: 0.0,
+                delta_y: 100_000.0,
+            },
+        );
+
+        assert_eq!(pitch, MAX_CAMERA_PITCH_RADIANS);
+    }
+}

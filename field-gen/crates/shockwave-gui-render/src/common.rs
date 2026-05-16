@@ -6,6 +6,7 @@ use shockwave_math::geometry::Vec3;
 pub const PREVIEW_HEIGHT: f32 = 280.0;
 pub const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 const MIN_DEPTH_SPAN_MM: f32 = 1000.0;
+const MAX_PITCH_RADIANS: f32 = 89.0_f32.to_radians();
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ViewportSize {
@@ -47,7 +48,7 @@ impl CameraTransform {
 
     pub fn orbit(_bounds: SceneBounds, yaw_radians: f32, pitch_radians: f32, zoom: f32) -> Self {
         let zoom = zoom.max(0.05);
-        let pitch = pitch_radians.clamp(-1.45, 1.45);
+        let pitch = pitch_radians.clamp(-MAX_PITCH_RADIANS, MAX_PITCH_RADIANS);
         let rotation = mat4_mul(rotation_x(pitch), rotation_z(yaw_radians));
         let scale = 0.01 * zoom;
         let depth_span = MIN_DEPTH_SPAN_MM;
