@@ -13,6 +13,20 @@ pub struct ViewportSize {
     pub height: u32,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ViewportRect {
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RenderViewport {
+    pub target_size: ViewportSize,
+    pub rect: ViewportRect,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ScissorRect {
     pub x: u32,
@@ -58,6 +72,12 @@ impl CameraTransform {
 
         Self {
             matrix: mat4_mul(fit, view),
+        }
+    }
+
+    pub fn mapped_to_viewport(self, viewport: RenderViewport) -> Self {
+        Self {
+            matrix: mat4_mul(viewport_mapping_matrix(viewport), self.matrix),
         }
     }
 }
@@ -341,6 +361,23 @@ fn translation_matrix(x: f32, y: f32, z: f32) -> [[f32; 4]; 4] {
     ]
 }
 
+fn viewport_mapping_matrix(viewport: RenderViewport) -> [[f32; 4]; 4] {
+    let target_width = viewport.target_size.width.max(1) as f32;
+    let target_height = viewport.target_size.height.max(1) as f32;
+    let rect = viewport.rect;
+    let x_scale = rect.width / target_width;
+    let y_scale = rect.height / target_height;
+    let x_offset = (2.0 * rect.x + rect.width) / target_width - 1.0;
+    let y_offset = 1.0 - (2.0 * rect.y + rect.height) / target_height;
+
+    [
+        [x_scale, 0.0, 0.0, 0.0],
+        [0.0, y_scale, 0.0, 0.0],
+        [0.0, 0.0, 1.0, 0.0],
+        [x_offset, y_offset, 0.0, 1.0],
+    ]
+}
+
 fn transform_point(matrix: [[f32; 4]; 4], point: Vec3) -> Vec3 {
     let x = point.x as f32;
     let y = point.y as f32;
@@ -429,6 +466,44 @@ mod tests {
 
         assert_close(screen_x_scale(camera_a), expected_scale);
         assert_close(screen_x_scale(camera_b), expected_scale);
+    }
+
+    #[test]
+    fn viewport_mapping_places_local_clip_space_inside_widget_rect() {
+        let viewport = RenderViewport {
+            target_size: ViewportSize {
+                width: 1000,
+                height: 800,
+            },
+            rect: ViewportRect {
+                x: 100.0,
+                y: 200.0,
+                width: 400.0,
+                height: 300.0,
+            },
+        };
+        let mapped = CameraTransform::default().mapped_to_viewport(viewport);
+        let center = transform_point(
+            mapped.matrix,
+            Vec3 {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            },
+        );
+        let top_right = transform_point(
+            mapped.matrix,
+            Vec3 {
+                x: 1.0,
+                y: 1.0,
+                z: 0.0,
+            },
+        );
+
+        assert_close(center.x, -0.4);
+        assert_close(center.y, 0.125);
+        assert_close(top_right.x, 0.0);
+        assert_close(top_right.y, 0.5);
     }
 
     fn assert_close(actual: f64, expected: f64) {

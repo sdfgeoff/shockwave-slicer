@@ -5,8 +5,8 @@ mod scene_renderer;
 mod toolpath_pipeline;
 
 pub use common::{
-    CameraTransform, DEPTH_FORMAT, ObjectTransform, PREVIEW_HEIGHT, SceneBounds, ScissorRect,
-    ViewportSize,
+    CameraTransform, DEPTH_FORMAT, ObjectTransform, PREVIEW_HEIGHT, RenderViewport, SceneBounds,
+    ScissorRect, ViewportRect, ViewportSize,
 };
 pub use scene::{RenderLines, RenderMesh, RenderScene};
 pub use scene_renderer::SceneRenderer;

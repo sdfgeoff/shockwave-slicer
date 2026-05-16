@@ -6,7 +6,10 @@ use iced::advanced::widget::Tree;
 use iced::advanced::{Clipboard, Layout, Shell, Widget, mouse};
 use iced::{Element, Event, Length, Point, Rectangle, Size, Theme};
 use iced_wgpu::wgpu;
-use shockwave_gui_render::{PREVIEW_HEIGHT, RenderScene, SceneRenderer, ScissorRect, ViewportSize};
+use shockwave_gui_render::{
+    PREVIEW_HEIGHT, RenderScene, RenderViewport, SceneRenderer, ScissorRect, ViewportRect,
+    ViewportSize,
+};
 
 pub use shockwave_gui_render::RenderScene as ScenePreviewGeometry;
 
@@ -170,17 +173,26 @@ impl iced_wgpu::Primitive for ScenePrimitive {
         pipeline: &mut Self::Pipeline,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-        _bounds: &Rectangle,
+        bounds: &Rectangle,
         viewport: &iced_wgpu::graphics::Viewport,
     ) {
         let physical_size = viewport.physical_size();
+        let scale_factor = viewport.scale_factor();
         pipeline.renderer.prepare(
             device,
             queue,
             &self.scene,
-            ViewportSize {
-                width: physical_size.width,
-                height: physical_size.height,
+            RenderViewport {
+                target_size: ViewportSize {
+                    width: physical_size.width,
+                    height: physical_size.height,
+                },
+                rect: ViewportRect {
+                    x: bounds.x * scale_factor,
+                    y: bounds.y * scale_factor,
+                    width: bounds.width * scale_factor,
+                    height: bounds.height * scale_factor,
+                },
             },
         );
     }

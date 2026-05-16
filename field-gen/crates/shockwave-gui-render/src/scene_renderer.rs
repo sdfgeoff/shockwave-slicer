@@ -1,4 +1,4 @@
-use crate::common::{DEPTH_FORMAT, ScissorRect, ViewportSize};
+use crate::common::{DEPTH_FORMAT, RenderViewport, ScissorRect};
 use crate::mesh_pipeline::MeshPipeline;
 use crate::scene::RenderScene;
 use crate::toolpath_pipeline::ToolpathPipeline;
@@ -28,9 +28,10 @@ impl SceneRenderer {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         scene: &RenderScene,
-        viewport: ViewportSize,
+        viewport: RenderViewport,
     ) {
         self.prepare_depth_texture(device, viewport);
+        let camera = scene.camera.mapped_to_viewport(viewport);
         resize_pipelines(
             &mut self.mesh_pipelines,
             scene.meshes.len(),
@@ -44,10 +45,10 @@ impl SceneRenderer {
             self.format,
         );
         for (pipeline, mesh) in self.mesh_pipelines.iter_mut().zip(&scene.meshes) {
-            pipeline.prepare(device, queue, scene.camera, mesh);
+            pipeline.prepare(device, queue, camera, mesh);
         }
         for (pipeline, lines) in self.line_pipelines.iter_mut().zip(&scene.lines) {
-            pipeline.prepare(device, queue, scene.camera, lines);
+            pipeline.prepare(device, queue, camera, lines);
         }
     }
 
@@ -97,10 +98,10 @@ impl SceneRenderer {
         }
     }
 
-    fn prepare_depth_texture(&mut self, device: &wgpu::Device, size: ViewportSize) {
+    fn prepare_depth_texture(&mut self, device: &wgpu::Device, viewport: RenderViewport) {
         let extent = wgpu::Extent3d {
-            width: size.width.max(1),
-            height: size.height.max(1),
+            width: viewport.target_size.width.max(1),
+            height: viewport.target_size.height.max(1),
             depth_or_array_layers: 1,
         };
         if self.depth_size == Some(extent) {
