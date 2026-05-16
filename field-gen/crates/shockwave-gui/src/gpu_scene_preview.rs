@@ -4,7 +4,7 @@ use iced::advanced::layout;
 use iced::advanced::renderer;
 use iced::advanced::widget::Tree;
 use iced::advanced::{Clipboard, Layout, Shell, Widget, mouse};
-use iced::{Element, Event, Length, Point, Rectangle, Size, Theme};
+use iced::{Element, Event, Length, Rectangle, Size, Theme};
 use iced_wgpu::wgpu;
 use shockwave_gui_render::{
     PREVIEW_HEIGHT, RenderScene, RenderViewport, SceneRenderer, ScissorRect, ViewportRect,
@@ -14,18 +14,19 @@ use shockwave_gui_render::{
 pub use shockwave_gui_render::RenderScene as ScenePreviewGeometry;
 
 #[derive(Clone, Copy, Debug)]
-pub struct CameraDrag {
-    pub delta_x: f32,
-    pub delta_y: f32,
+pub enum CameraEvent {
+    DragStarted { x: f32, y: f32 },
+    DragMoved { x: f32, y: f32 },
+    DragEnded,
 }
 
 pub fn scene_view<Message: 'static>(
     scene: Arc<RenderScene>,
-    on_camera_drag: impl Fn(CameraDrag) -> Message + 'static,
+    on_camera_event: impl Fn(CameraEvent) -> Message + 'static,
 ) -> Element<'static, Message> {
     Element::new(ScenePreview {
         scene,
-        on_camera_drag: Box::new(on_camera_drag),
+        on_camera_event: Box::new(on_camera_event),
         width: Length::Fill,
         height: Length::Fixed(PREVIEW_HEIGHT),
     })
@@ -33,7 +34,7 @@ pub fn scene_view<Message: 'static>(
 
 struct ScenePreview<Message> {
     scene: Arc<RenderScene>,
-    on_camera_drag: Box<dyn Fn(CameraDrag) -> Message>,
+    on_camera_event: Box<dyn Fn(CameraEvent) -> Message>,
     width: Length,
     height: Length,
 }
@@ -41,7 +42,6 @@ struct ScenePreview<Message> {
 #[derive(Clone, Copy, Debug, Default)]
 struct PreviewState {
     dragging: bool,
-    last_position: Option<Point>,
 }
 
 impl<Message, Renderer> Widget<Message, Theme, Renderer> for ScenePreview<Message>
@@ -90,26 +90,27 @@ where
                 if cursor.is_over(bounds) =>
             {
                 state.dragging = true;
-                state.last_position = cursor.position();
+                if let Some(position) = cursor.position() {
+                    shell.publish((self.on_camera_event)(CameraEvent::DragStarted {
+                        x: position.x,
+                        y: position.y,
+                    }));
+                }
                 shell.capture_event();
             }
             Event::Mouse(iced::mouse::Event::ButtonReleased(iced::mouse::Button::Left)) => {
                 if state.dragging {
                     state.dragging = false;
-                    state.last_position = None;
+                    shell.publish((self.on_camera_event)(CameraEvent::DragEnded));
                     shell.capture_event();
                 }
             }
             Event::Mouse(iced::mouse::Event::CursorMoved { position }) if state.dragging => {
-                if let Some(previous) = state.last_position {
-                    let drag = CameraDrag {
-                        delta_x: position.x - previous.x,
-                        delta_y: position.y - previous.y,
-                    };
-                    shell.publish((self.on_camera_drag)(drag));
-                    shell.capture_event();
-                }
-                state.last_position = Some(*position);
+                shell.publish((self.on_camera_event)(CameraEvent::DragMoved {
+                    x: position.x,
+                    y: position.y,
+                }));
+                shell.capture_event();
             }
             _ => {}
         }

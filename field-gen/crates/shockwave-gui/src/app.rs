@@ -42,8 +42,17 @@ struct ShockwaveGui {
     camera_yaw_radians: f32,
     camera_pitch_radians: f32,
     camera_zoom: f32,
+    camera_drag: Option<CameraDragState>,
     slice_job: Option<SliceJobState>,
     status: String,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct CameraDragState {
+    start_x: f32,
+    start_y: f32,
+    start_yaw_radians: f32,
+    start_pitch_radians: f32,
 }
 
 #[derive(Debug)]
@@ -73,6 +82,7 @@ impl ShockwaveGui {
             camera_yaw_radians: -std::f32::consts::FRAC_PI_4,
             camera_pitch_radians: 0.55,
             camera_zoom: 1.0,
+            camera_drag: None,
             slice_job: None,
             status: "Loading settings".to_string(),
         };
@@ -300,21 +310,35 @@ impl ShockwaveGui {
         );
     }
 
-    fn rotate_camera(&mut self, drag: gpu_scene_preview::CameraDrag) {
-        (self.camera_yaw_radians, self.camera_pitch_radians) =
-            apply_camera_drag(self.camera_yaw_radians, self.camera_pitch_radians, drag);
-        self.refresh_preview_geometry();
+    fn handle_camera_event(&mut self, event: gpu_scene_preview::CameraEvent) {
+        match event {
+            gpu_scene_preview::CameraEvent::DragStarted { x, y } => {
+                self.camera_drag = Some(CameraDragState {
+                    start_x: x,
+                    start_y: y,
+                    start_yaw_radians: self.camera_yaw_radians,
+                    start_pitch_radians: self.camera_pitch_radians,
+                });
+            }
+            gpu_scene_preview::CameraEvent::DragMoved { x, y } => {
+                let Some(drag) = self.camera_drag else {
+                    return;
+                };
+                (self.camera_yaw_radians, self.camera_pitch_radians) =
+                    apply_camera_drag(drag, x, y);
+                self.refresh_preview_geometry();
+            }
+            gpu_scene_preview::CameraEvent::DragEnded => {
+                self.camera_drag = None;
+            }
+        }
     }
 }
 
-fn apply_camera_drag(
-    yaw_radians: f32,
-    pitch_radians: f32,
-    drag: gpu_scene_preview::CameraDrag,
-) -> (f32, f32) {
+fn apply_camera_drag(drag: CameraDragState, current_x: f32, current_y: f32) -> (f32, f32) {
     (
-        yaw_radians + drag.delta_x * CAMERA_DRAG_SENSITIVITY,
-        (pitch_radians + drag.delta_y * CAMERA_DRAG_SENSITIVITY)
+        drag.start_yaw_radians + (current_x - drag.start_x) * CAMERA_DRAG_SENSITIVITY,
+        (drag.start_pitch_radians + (current_y - drag.start_y) * CAMERA_DRAG_SENSITIVITY)
             .clamp(-MAX_CAMERA_PITCH_RADIANS, MAX_CAMERA_PITCH_RADIANS),
     )
 }
@@ -327,7 +351,7 @@ enum Message {
     Slice,
     CancelSlice,
     PollSlice,
-    CameraDragged(gpu_scene_preview::CameraDrag),
+    CameraEvent(gpu_scene_preview::CameraEvent),
     Settings(SettingsMessage),
 }
 
@@ -339,7 +363,7 @@ fn update(state: &mut ShockwaveGui, message: Message) {
         Message::Slice => state.start_slice(),
         Message::CancelSlice => state.cancel_slice(),
         Message::PollSlice => state.poll_slice_events(),
-        Message::CameraDragged(drag) => state.rotate_camera(drag),
+        Message::CameraEvent(event) => state.handle_camera_event(event),
         Message::Settings(message) => {
             state.settings_form.update(message);
         }
@@ -404,7 +428,7 @@ fn view(state: &ShockwaveGui) -> Element<'_, Message> {
         ]
         .spacing(16),
         text("GPU Preview").size(24),
-        gpu_scene_preview::scene_view(Arc::clone(&state.scene_preview), Message::CameraDragged),
+        gpu_scene_preview::scene_view(Arc::clone(&state.scene_preview), Message::CameraEvent),
         text("Settings").size(24),
         state.settings_form.view().map(Message::Settings),
         button("Save settings").on_press(Message::SaveSettings),
@@ -458,37 +482,25 @@ mod tests {
 
     #[test]
     fn camera_pitch_accumulates_across_separate_drags() {
-        let (yaw, pitch) = apply_camera_drag(
-            0.0,
-            0.2,
-            gpu_scene_preview::CameraDrag {
-                delta_x: 0.0,
-                delta_y: 10.0,
-            },
-        );
-        let (_, pitch) = apply_camera_drag(
-            yaw,
-            pitch,
-            gpu_scene_preview::CameraDrag {
-                delta_x: 0.0,
-                delta_y: 10.0,
-            },
-        );
+        let (_, pitch) = apply_camera_drag(drag_start(0.0, 0.2), 0.0, 10.0);
+        let (_, pitch) = apply_camera_drag(drag_start(0.0, pitch), 0.0, 10.0);
 
         assert!((pitch - 0.4).abs() < f32::EPSILON);
     }
 
     #[test]
     fn camera_pitch_is_clamped_to_89_degrees() {
-        let (_, pitch) = apply_camera_drag(
-            0.0,
-            0.0,
-            gpu_scene_preview::CameraDrag {
-                delta_x: 0.0,
-                delta_y: 100_000.0,
-            },
-        );
+        let (_, pitch) = apply_camera_drag(drag_start(0.0, 0.0), 0.0, 100_000.0);
 
         assert_eq!(pitch, MAX_CAMERA_PITCH_RADIANS);
+    }
+
+    fn drag_start(start_yaw_radians: f32, start_pitch_radians: f32) -> CameraDragState {
+        CameraDragState {
+            start_x: 0.0,
+            start_y: 0.0,
+            start_yaw_radians,
+            start_pitch_radians,
+        }
     }
 }
