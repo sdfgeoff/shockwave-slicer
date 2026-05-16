@@ -45,22 +45,13 @@ impl CameraTransform {
         Self::orbit(bounds, -std::f32::consts::FRAC_PI_4, 0.55, 1.0)
     }
 
-    pub fn orbit(bounds: SceneBounds, yaw_radians: f32, pitch_radians: f32, zoom: f32) -> Self {
+    pub fn orbit(_bounds: SceneBounds, yaw_radians: f32, pitch_radians: f32, zoom: f32) -> Self {
         let zoom = zoom.max(0.05);
         let pitch = pitch_radians.clamp(-1.45, 1.45);
         let rotation = mat4_mul(rotation_x(pitch), rotation_z(yaw_radians));
-        let center = bounds.center();
-        let view = mat4_mul(
-            rotation,
-            translation_matrix(-center.x as f32, -center.y as f32, -center.z as f32),
-        );
-        let transformed = bounds.corners().map(|point| transform_point(view, point));
-        let (min_z, max_z) = range(transformed.map(|point| point.z));
-
-        let scale = 0.86 * zoom / bounds.radius().max(1.0);
-        let depth_span = (max_z - min_z).max(MIN_DEPTH_SPAN_MM);
-        let depth_midpoint = (min_z + max_z) * 0.5;
-        let depth_min = depth_midpoint - depth_span * 0.5;
+        let scale = 0.01 * zoom;
+        let depth_span = MIN_DEPTH_SPAN_MM;
+        let depth_min = -depth_span * 0.5;
         let depth_scale = -0.9 / depth_span;
         let depth_offset = 0.95 - depth_min * depth_scale;
         let fit = [
@@ -71,7 +62,7 @@ impl CameraTransform {
         ];
 
         Self {
-            matrix: mat4_mul(fit, view),
+            matrix: mat4_mul(fit, rotation),
         }
     }
 
@@ -202,72 +193,6 @@ impl SceneBounds {
     pub fn is_empty(self) -> bool {
         !self.min.x.is_finite()
     }
-
-    pub fn center(self) -> Vec3 {
-        Vec3 {
-            x: (self.min.x + self.max.x) * 0.5,
-            y: (self.min.y + self.max.y) * 0.5,
-            z: (self.min.z + self.max.z) * 0.5,
-        }
-    }
-
-    pub fn radius(self) -> f32 {
-        let center = self.center();
-        self.corners()
-            .iter()
-            .map(|point| {
-                let dx = point.x - center.x;
-                let dy = point.y - center.y;
-                let dz = point.z - center.z;
-                (dx * dx + dy * dy + dz * dz).sqrt() as f32
-            })
-            .fold(0.0, f32::max)
-    }
-
-    pub(crate) fn corners(self) -> [Vec3; 8] {
-        [
-            Vec3 {
-                x: self.min.x,
-                y: self.min.y,
-                z: self.min.z,
-            },
-            Vec3 {
-                x: self.max.x,
-                y: self.min.y,
-                z: self.min.z,
-            },
-            Vec3 {
-                x: self.min.x,
-                y: self.max.y,
-                z: self.min.z,
-            },
-            Vec3 {
-                x: self.max.x,
-                y: self.max.y,
-                z: self.min.z,
-            },
-            Vec3 {
-                x: self.min.x,
-                y: self.min.y,
-                z: self.max.z,
-            },
-            Vec3 {
-                x: self.max.x,
-                y: self.min.y,
-                z: self.max.z,
-            },
-            Vec3 {
-                x: self.min.x,
-                y: self.max.y,
-                z: self.max.z,
-            },
-            Vec3 {
-                x: self.max.x,
-                y: self.max.y,
-                z: self.max.z,
-            },
-        ]
-    }
 }
 
 pub(crate) fn bed_corners(print_volume: Dimensions3) -> [Vec3; 4] {
@@ -352,15 +277,6 @@ fn rotation_z(angle: f32) -> [[f32; 4]; 4] {
     ]
 }
 
-fn translation_matrix(x: f32, y: f32, z: f32) -> [[f32; 4]; 4] {
-    [
-        [1.0, 0.0, 0.0, 0.0],
-        [0.0, 1.0, 0.0, 0.0],
-        [0.0, 0.0, 1.0, 0.0],
-        [x, y, z, 1.0],
-    ]
-}
-
 fn viewport_mapping_matrix(viewport: RenderViewport) -> [[f32; 4]; 4] {
     let target_width = viewport.target_size.width.max(1) as f32;
     let target_height = viewport.target_size.height.max(1) as f32;
@@ -376,27 +292,6 @@ fn viewport_mapping_matrix(viewport: RenderViewport) -> [[f32; 4]; 4] {
         [0.0, 0.0, 1.0, 0.0],
         [x_offset, y_offset, 0.0, 1.0],
     ]
-}
-
-fn transform_point(matrix: [[f32; 4]; 4], point: Vec3) -> Vec3 {
-    let x = point.x as f32;
-    let y = point.y as f32;
-    let z = point.z as f32;
-    Vec3 {
-        x: (matrix[0][0] * x + matrix[1][0] * y + matrix[2][0] * z + matrix[3][0]) as f64,
-        y: (matrix[0][1] * x + matrix[1][1] * y + matrix[2][1] * z + matrix[3][1]) as f64,
-        z: (matrix[0][2] * x + matrix[1][2] * y + matrix[2][2] * z + matrix[3][2]) as f64,
-    }
-}
-
-fn range(values: [f64; 8]) -> (f32, f32) {
-    let mut min = values[0] as f32;
-    let mut max = min;
-    for value in values.iter().skip(1) {
-        min = min.min(*value as f32);
-        max = max.max(*value as f32);
-    }
-    (min, max)
 }
 
 #[cfg(test)]
@@ -418,43 +313,28 @@ mod tests {
             [10.0, 20.0, 30.0, 1.0],
         ];
         let transform = mat4_mul(translate, scale);
-        let point = transform_point(
-            transform,
-            Vec3 {
-                x: 1.0,
-                y: 2.0,
-                z: 3.0,
-            },
-        );
+        let point = transform_point(transform, [1.0, 2.0, 3.0]);
 
-        assert_close(point.x, 12.0);
-        assert_close(point.y, 24.0);
-        assert_close(point.z, 36.0);
+        assert_close(point[0], 12.0);
+        assert_close(point[1], 24.0);
+        assert_close(point[2], 36.0);
     }
 
     #[test]
-    fn orbit_camera_keeps_bed_depth_inside_clip_space_with_large_depth_span() {
+    fn orbit_camera_uses_fixed_depth_span() {
         let bounds = SceneBounds::from_print_volume(Dimensions3 {
             x: 300.0,
             y: 300.0,
             z: 300.0,
         });
         let camera = CameraTransform::orbit(bounds, 0.8, 0.6, 1.0);
-        let transformed = bounds
-            .corners()
-            .map(|point| transform_point(camera.matrix, point));
+        let origin = transform_point(camera.matrix, [0.0, 0.0, 0.0]);
 
-        for point in transformed {
-            assert!(
-                (0.0..=1.0).contains(&(point.z as f32)),
-                "depth {} was outside clip range",
-                point.z
-            );
-        }
+        assert_close(origin[2], 0.5);
     }
 
     #[test]
-    fn orbit_camera_keeps_constant_screen_scale_across_rotation() {
+    fn orbit_camera_keeps_constant_world_origin_scale_across_rotation() {
         let bounds = SceneBounds::from_print_volume(Dimensions3 {
             x: 300.0,
             y: 300.0,
@@ -462,10 +342,9 @@ mod tests {
         });
         let camera_a = CameraTransform::orbit(bounds, 0.0, 0.4, 1.0);
         let camera_b = CameraTransform::orbit(bounds, 1.2, 0.4, 1.0);
-        let expected_scale = 0.86 / bounds.radius() as f64;
 
-        assert_close(screen_x_scale(camera_a), expected_scale);
-        assert_close(screen_x_scale(camera_b), expected_scale);
+        assert_close(screen_x_scale(camera_a), 0.01);
+        assert_close(screen_x_scale(camera_b), 0.01);
     }
 
     #[test]
@@ -483,27 +362,13 @@ mod tests {
             },
         };
         let mapped = CameraTransform::default().mapped_to_viewport(viewport);
-        let center = transform_point(
-            mapped.matrix,
-            Vec3 {
-                x: 0.0,
-                y: 0.0,
-                z: 0.0,
-            },
-        );
-        let top_right = transform_point(
-            mapped.matrix,
-            Vec3 {
-                x: 1.0,
-                y: 1.0,
-                z: 0.0,
-            },
-        );
+        let center = transform_point(mapped.matrix, [0.0, 0.0, 0.0]);
+        let top_right = transform_point(mapped.matrix, [1.0, 1.0, 0.0]);
 
-        assert_close(center.x, -0.4);
-        assert_close(center.y, 0.125);
-        assert_close(top_right.x, 0.0);
-        assert_close(top_right.y, 0.5);
+        assert_close(center[0], -0.4);
+        assert_close(center[1], 0.125);
+        assert_close(top_right[0], 0.0);
+        assert_close(top_right[1], 0.5);
     }
 
     fn assert_close(actual: f64, expected: f64) {
@@ -518,5 +383,16 @@ mod tests {
         let y = camera.matrix[1][0] as f64;
         let z = camera.matrix[2][0] as f64;
         (x * x + y * y + z * z).sqrt()
+    }
+
+    fn transform_point(matrix: [[f32; 4]; 4], point: [f64; 3]) -> [f64; 3] {
+        let x = point[0] as f32;
+        let y = point[1] as f32;
+        let z = point[2] as f32;
+        [
+            (matrix[0][0] * x + matrix[1][0] * y + matrix[2][0] * z + matrix[3][0]) as f64,
+            (matrix[0][1] * x + matrix[1][1] * y + matrix[2][1] * z + matrix[3][1]) as f64,
+            (matrix[0][2] * x + matrix[1][2] * y + matrix[2][2] * z + matrix[3][2]) as f64,
+        ]
     }
 }
